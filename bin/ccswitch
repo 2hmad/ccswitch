@@ -1,0 +1,408 @@
+#!/usr/bin/env bash
+#
+# ccswitch - switch between multiple Claude Code accounts
+#
+# Everything stays shared: MCP servers, plugins, skills, agents, commands,
+# session history, settings and CLAUDE.md all live in one ~/.claude.
+# Only the credential (and the identity it belongs to) is swapped.
+#
+# https://github.com/YOURNAME/ccswitch
+# MIT licensed.
+
+set -euo pipefail
+
+VERSION="0.1.0"
+
+# --- locations --------------------------------------------------------------
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  CC_DIR="$CLAUDE_CONFIG_DIR"
+  CC_JSON="$CLAUDE_CONFIG_DIR/.claude.json"
+else
+  CC_DIR="$HOME/.claude"
+  CC_JSON="$HOME/.claude.json"
+fi
+CRED="$CC_DIR/.credentials.json"
+
+VAULT="${CCSWITCH_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ccswitch}"
+ACCOUNTS="$VAULT/accounts"
+ACTIVE_FILE="$VAULT/active"
+
+# Keys in .claude.json that belong to the signed-in account rather than to
+# your configuration. These travel with the credential; everything else
+# (mcpServers, projects, tips, onboarding state...) stays put and shared.
+IDENTITY_KEYS='("oauthAccount","userID")'
+
+# --- output -----------------------------------------------------------------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  B=$'\033[1m'; DIM=$'\033[2m'; GRN=$'\033[32m'; YLW=$'\033[33m'; RED=$'\033[31m'; RST=$'\033[0m'
+else
+  B=""; DIM=""; GRN=""; YLW=""; RED=""; RST=""
+fi
+
+info() { printf '%s\n' "$*"; }
+warn() { printf '%swarning:%s %s\n' "$YLW" "$RST" "$*" >&2; }
+die()  { printf '%serror:%s %s\n' "$RED" "$RST" "$*" >&2; exit 1; }
+
+# --- prerequisites ----------------------------------------------------------
+command -v python3 >/dev/null 2>&1 || die "python3 is required but not installed"
+
+case "$(uname -s)" in
+  Linux) ;;
+  Darwin)
+    if [ ! -f "$CRED" ]; then
+      die "on macOS Claude Code stores credentials in the Keychain, which ccswitch does not support yet.
+       Follow https://github.com/YOURNAME/ccswitch/issues/1 or contribute a keychain backend."
+    fi
+    ;;
+  *) warn "untested platform: $(uname -s)" ;;
+esac
+
+mkdir -p "$ACCOUNTS"
+chmod 700 "$VAULT" 2>/dev/null || true
+
+# --- json helpers -----------------------------------------------------------
+identity_extract() {  # $1=.claude.json  -> identity json on stdout
+  python3 - "$1" <<PYEOF
+import json, os, sys
+p = sys.argv[1]
+d = json.load(open(p)) if os.path.exists(p) else {}
+print(json.dumps({k: d[k] for k in $IDENTITY_KEYS if k in d}, indent=2))
+PYEOF
+}
+
+identity_apply() {  # $1=.claude.json  $2=identity.json
+  python3 - "$1" "$2" <<PYEOF
+import json, os, sys
+tp, ip = sys.argv[1], sys.argv[2]
+t = json.load(open(tp)) if os.path.exists(tp) else {}
+i = json.load(open(ip)) if os.path.exists(ip) else {}
+for k in $IDENTITY_KEYS:
+    t.pop(k, None)
+t.update(i)
+os.makedirs(os.path.dirname(tp) or ".", exist_ok=True)
+json.dump(t, open(tp, "w"), indent=2)
+PYEOF
+}
+
+acct_email() {  # $1=account name
+  python3 - "$ACCOUNTS/$1/identity.json" <<'PYEOF'
+import json, os, sys
+p = sys.argv[1]
+if not os.path.exists(p):
+    print("-"); raise SystemExit
+d = json.load(open(p))
+print((d.get("oauthAccount") or {}).get("emailAddress") or "-")
+PYEOF
+}
+
+acct_expiry() {  # $1=account name -> seconds remaining, or "none"
+  python3 - "$ACCOUNTS/$1/credentials.json" <<'PYEOF'
+import json, os, sys, time
+p = sys.argv[1]
+if not os.path.exists(p):
+    print("none"); raise SystemExit
+try:
+    d = json.load(open(p))
+    oauth = d.get("claudeAiOauth") or {}
+    exp = oauth.get("expiresAt")
+    print(int(exp / 1000 - time.time()) if exp else "none")
+except Exception:
+    print("none")
+PYEOF
+}
+
+fmt_left() {  # $1=seconds
+  local s="$1"
+  if [ "$s" = "none" ]; then printf 'unknown'; return; fi
+  if [ "$s" -le 0 ]; then printf 'expired %dh ago' $(( -s / 3600 )); return; fi
+  printf 'valid %dh %dm' $(( s / 3600 )) $(( (s % 3600) / 60 ))
+}
+
+# --- state ------------------------------------------------------------------
+active_name() { if [ -f "$ACTIVE_FILE" ]; then cat "$ACTIVE_FILE"; fi; }
+acct_exists() { [ -d "$ACCOUNTS/$1" ]; }
+
+validate_name() {
+  case "$1" in
+    ""|*[!a-zA-Z0-9._-]*) die "invalid account name '$1' (use letters, digits, . _ -)" ;;
+  esac
+}
+
+claude_running() {
+  local bin
+  bin="$(command -v claude 2>/dev/null)" || return 1
+  [ -n "$bin" ] || return 1
+  pgrep -x claude >/dev/null 2>&1 && return 0
+  pgrep -f -- "$bin" >/dev/null 2>&1
+}
+
+# Snapshot the live credential+identity into an account slot.
+capture_into() {  # $1=account name
+  local n="$1" d="$ACCOUNTS/$1"
+  [ -f "$CRED" ] || die "no live credential at $CRED - run 'claude' and /login first"
+  mkdir -p "$d"
+  cp "$CRED" "$d/credentials.json"
+  identity_extract "$CC_JSON" > "$d/identity.json"
+  chmod 700 "$d"; chmod 600 "$d"/*.json
+}
+
+# Restore an account slot into the live location.
+restore_from() {  # $1=account name
+  local n="$1" d="$ACCOUNTS/$1"
+  [ -f "$d/credentials.json" ] || die "account '$n' has no stored credential"
+  mkdir -p "$CC_DIR"
+  cp "$d/credentials.json" "$CRED"
+  chmod 600 "$CRED"
+  [ -f "$d/identity.json" ] && identity_apply "$CC_JSON" "$d/identity.json"
+  printf '%s\n' "$n" > "$ACTIVE_FILE"
+}
+
+# Save the live state back into whichever account is currently active, so a
+# token refreshed during the session is not lost when we switch away.
+save_active() {
+  local cur; cur="$(active_name)"
+  [ -n "$cur" ] || return 0
+  [ -f "$CRED" ] || return 0
+  capture_into "$cur"
+}
+
+# --- commands ---------------------------------------------------------------
+cmd_add() {
+  local n="${1:-}"; [ -n "$n" ] || die "usage: ccswitch add <name>"
+  validate_name "$n"
+  acct_exists "$n" && die "account '$n' already exists (use 'ccswitch rm $n' first)"
+  capture_into "$n"
+  printf '%s\n' "$n" > "$ACTIVE_FILE"
+  info "${GRN}added${RST} $n  ($(acct_email "$n"))"
+}
+
+cmd_use() {
+  local n="${1:-}" force="${2:-}"
+  [ -n "$n" ] || die "usage: ccswitch use <name>"
+  acct_exists "$n" || die "no such account '$n' (see: ccswitch list)"
+
+  if [ "$n" = "$(active_name)" ]; then
+    info "already on ${B}$n${RST}"
+    return 0
+  fi
+
+  if [ "$force" != "--force" ] && claude_running; then
+    die "a claude process is running - exit it first, or pass --force"
+  fi
+
+  save_active
+  restore_from "$n"
+
+  local left; left="$(acct_expiry "$n")"
+  info "${GRN}switched to${RST} ${B}$n${RST}  ($(acct_email "$n"))  $(fmt_left "$left")"
+  if [ "$left" != "none" ] && [ "$left" -le 0 ]; then
+    warn "this token is expired - run 'ccswitch login $n' to refresh it"
+  fi
+}
+
+cmd_list() {
+  local cur; cur="$(active_name)"
+  local found=0
+  printf '%s  %-12s %-30s %-20s%s\n' "$B" "ACCOUNT" "EMAIL" "TOKEN" "$RST"
+  for d in "$ACCOUNTS"/*/; do
+    [ -d "$d" ] || continue
+    found=1
+    local n; n="$(basename "$d")"
+    local mark="  "; [ "$n" = "$cur" ] && mark="${GRN}* ${RST}"
+    printf '%s%-12s %-30s %-20s\n' "$mark" "$n" "$(acct_email "$n")" "$(fmt_left "$(acct_expiry "$n")")"
+  done
+  [ "$found" = 1 ] || info "${DIM}no accounts yet - run: ccswitch login <name>${RST}"
+}
+
+cmd_current() {
+  local cur; cur="$(active_name)"
+  [ -n "$cur" ] || { info "none"; return 1; }
+  printf '%s\n' "$cur"
+}
+
+cmd_login() {
+  local n="${1:-}"; [ -n "$n" ] || die "usage: ccswitch login <name>"
+  validate_name "$n"
+  command -v claude >/dev/null 2>&1 || die "the 'claude' command was not found on PATH"
+
+  claude_running && die "a claude process is running - exit it first"
+
+  save_active
+
+  # Clear the live credential so Claude Code prompts for a fresh sign-in.
+  rm -f "$CRED"
+  local tmp_id; tmp_id="$(mktemp)"
+  echo '{}' > "$tmp_id"
+  identity_apply "$CC_JSON" "$tmp_id"
+  rm -f "$tmp_id"
+
+  info "Starting Claude Code. Run ${B}/login${RST} inside it, then exit with ${B}/exit${RST}."
+  info ""
+  claude || true
+  info ""
+
+  if [ ! -f "$CRED" ]; then
+    warn "no credential was written - sign-in did not complete. Nothing saved."
+    local cur; cur="$(active_name)"
+    [ -n "$cur" ] && acct_exists "$cur" && { restore_from "$cur"; info "restored previous account: $cur"; }
+    return 1
+  fi
+
+  capture_into "$n"
+  printf '%s\n' "$n" > "$ACTIVE_FILE"
+  info "${GRN}saved${RST} $n  ($(acct_email "$n"))  $(fmt_left "$(acct_expiry "$n")")"
+}
+
+cmd_rm() {
+  local n="${1:-}"; [ -n "$n" ] || die "usage: ccswitch rm <name>"
+  acct_exists "$n" || die "no such account '$n'"
+  rm -rf "${ACCOUNTS:?}/$n"
+  [ "$n" = "$(active_name)" ] && rm -f "$ACTIVE_FILE"
+  info "removed $n"
+}
+
+cmd_rename() {
+  local o="${1:-}" n="${2:-}"
+  if [ -z "$o" ] || [ -z "$n" ]; then die "usage: ccswitch rename <old> <new>"; fi
+  validate_name "$n"
+  acct_exists "$o" || die "no such account '$o'"
+  acct_exists "$n" && die "account '$n' already exists"
+  mv "$ACCOUNTS/$o" "$ACCOUNTS/$n"
+  [ "$o" = "$(active_name)" ] && printf '%s\n' "$n" > "$ACTIVE_FILE"
+  info "renamed $o -> $n"
+}
+
+cmd_save() {
+  local cur; cur="$(active_name)"
+  [ -n "$cur" ] || die "no active account to save"
+  capture_into "$cur"
+  info "saved live credential into $cur"
+}
+
+cmd_backup() {
+  local out="${1:-$HOME/ccswitch-backup-$(date +%F-%H%M).tar.gz}"
+  tar czf "$out" -C "$(dirname "$VAULT")" "$(basename "$VAULT")"
+  chmod 600 "$out"
+  info "backed up -> $out"
+  warn "this archive contains live session tokens - store it somewhere encrypted"
+}
+
+cmd_restore() {
+  local f="${1:-}"; [ -n "$f" ] || die "usage: ccswitch restore <file.tar.gz>"
+  [ -f "$f" ] || die "no such file: $f"
+  tar xzf "$f" -C "$(dirname "$VAULT")"
+  info "restored vault from $f"
+  cmd_list
+}
+
+cmd_doctor() {
+  local ok=0 _none=""
+  [ -n "$(active_name)" ] || _none="none"
+  printf '%sccswitch %s%s\n\n' "$B" "$VERSION" "$RST"
+  printf '  claude on PATH   : %s\n' "$(command -v claude || echo "${RED}not found${RST}")"
+  printf '  config dir       : %s\n' "$CC_DIR"
+  printf '  config json      : %s%s\n' "$CC_JSON" "$([ -f "$CC_JSON" ] || echo "  ${YLW}(missing)${RST}")"
+  printf '  live credential  : %s\n' "$([ -f "$CRED" ] && echo present || echo "${YLW}absent${RST}")"
+  printf '  vault            : %s\n' "$VAULT"
+  printf '  active account   : %s\n' "$(active_name)${_none}"
+  printf '  accounts stored  : %s\n' "$(find "$ACCOUNTS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    printf '\n  %sCLAUDE_CONFIG_DIR is set%s (%s)\n' "$YLW" "$RST" "$CLAUDE_CONFIG_DIR"
+    printf '  ccswitch is operating on that directory rather than ~/.claude.\n'
+    printf '  If you previously used per-account CLAUDE_CONFIG_DIR wrappers,\n'
+    printf '  unset it so all accounts share one config.\n'
+    ok=1
+  fi
+  return $ok
+}
+
+cmd_completion() {
+  case "${1:-}" in
+    bash) cat <<'EOF'
+_ccswitch() {
+  local cur prev accounts
+  cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
+  accounts=$(ls -1 "${CCSWITCH_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ccswitch}/accounts" 2>/dev/null)
+  case "$prev" in
+    use|rm|rename|login) COMPREPLY=($(compgen -W "$accounts" -- "$cur")); return;;
+  esac
+  COMPREPLY=($(compgen -W "use add login list current rm rename save backup restore doctor completion help version" -- "$cur"))
+}
+complete -F _ccswitch ccswitch
+EOF
+    ;;
+    zsh) cat <<'EOF'
+#compdef ccswitch
+_ccswitch() {
+  local -a accounts cmds
+  accounts=(${(f)"$(ls -1 ${CCSWITCH_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ccswitch}/accounts 2>/dev/null)"})
+  cmds=(use add login list current rm rename save backup restore doctor completion help version)
+  if (( CURRENT == 2 )); then
+    _describe 'command' cmds
+    _describe 'account' accounts
+  elif [[ $words[2] == (use|rm|rename|login) ]]; then
+    _describe 'account' accounts
+  fi
+}
+_ccswitch "$@"
+EOF
+    ;;
+    *) die "usage: ccswitch completion <bash|zsh>" ;;
+  esac
+}
+
+usage() {
+  cat <<EOF
+${B}ccswitch${RST} $VERSION - switch between Claude Code accounts
+
+  Everything stays shared - MCP servers, plugins, skills, agents, history,
+  settings and CLAUDE.md. Only the signed-in account changes.
+
+${B}USAGE${RST}
+  ccswitch <name>                switch to an account (shorthand for 'use')
+  ccswitch use <name> [--force]  switch to an account
+  ccswitch login <name>          sign a new account in and store it
+  ccswitch add <name>            store the currently signed-in account
+  ccswitch list                  list accounts, emails and token status
+  ccswitch current               print the active account name
+  ccswitch save                  write the live token back to the active slot
+  ccswitch rm <name>             forget an account
+  ccswitch rename <old> <new>    rename an account
+  ccswitch backup [file]         archive the vault
+  ccswitch restore <file>        restore a vault archive
+  ccswitch doctor                diagnose the setup
+  ccswitch completion <bash|zsh> print a shell completion script
+
+${B}EXAMPLE${RST}
+  ccswitch login work
+  ccswitch login personal
+  ccswitch work
+  claude                         # runs as 'work'
+
+${B}ENVIRONMENT${RST}
+  CCSWITCH_HOME    vault location (default \$XDG_CONFIG_HOME/ccswitch)
+  NO_COLOR         disable colour
+EOF
+}
+
+# --- dispatch ---------------------------------------------------------------
+cmd="${1:-}"; shift 2>/dev/null || true
+case "$cmd" in
+  use)                cmd_use "${1:-}" "${2:-}" ;;
+  add)                cmd_add "${1:-}" ;;
+  login)              cmd_login "${1:-}" ;;
+  list|ls)            cmd_list ;;
+  current)            cmd_current ;;
+  save)               cmd_save ;;
+  rm|remove|delete)   cmd_rm "${1:-}" ;;
+  rename|mv)          cmd_rename "${1:-}" "${2:-}" ;;
+  backup)             cmd_backup "${1:-}" ;;
+  restore)            cmd_restore "${1:-}" ;;
+  doctor)             cmd_doctor ;;
+  completion)         cmd_completion "${1:-}" ;;
+  version|-V|--version) info "ccswitch $VERSION" ;;
+  help|-h|--help)     usage ;;
+  "")                 cmd_list ;;
+  -*)                 die "unknown option: $cmd" ;;
+  *)                  cmd_use "$cmd" "${1:-}" ;;   # ccswitch <name>
+esac
