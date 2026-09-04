@@ -55,7 +55,7 @@ ccswitch add beta >/dev/null
 check "add beta"             "$(ccswitch current)"                       "beta"
 check "two accounts listed"  "$(ccswitch list | grep -c example.com)"    "2"
 
-ccswitch alpha >/dev/null
+ccswitch alpha --force >/dev/null
 check "switch: token"        "$(j /.claude/.credentials.json "['claudeAiOauth']['accessToken']")" "TOK-A"
 check "switch: userID"       "$(j /.claude.json "['userID']")"           "UID-A"
 check "switch: email"        "$(j /.claude.json "['oauthAccount']['emailAddress']")" "a@example.com"
@@ -70,7 +70,7 @@ import json,os,time
 h=os.environ['HOME']
 json.dump({'claudeAiOauth':{'accessToken':'TOK-A2','refreshToken':'r2','expiresAt':int((time.time()+12*3600)*1000)}},
           open(h+'/.claude/.credentials.json','w'))"
-ccswitch beta >/dev/null; ccswitch alpha >/dev/null
+ccswitch beta --force >/dev/null; ccswitch alpha --force >/dev/null
 check "refresh persisted"    "$(j /.claude/.credentials.json "['claudeAiOauth']['accessToken']")" "TOK-A2"
 
 ccswitch rename alpha gamma >/dev/null
