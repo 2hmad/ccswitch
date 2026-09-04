@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-04
+
 ### Added
 
 - macOS support. Claude Code stores the OAuth credential in the login keychain
@@ -22,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The keychain backend is covered by `test/keychain.sh`, which runs on any
   platform against a `security(1)` stand-in. That verifies ccswitch's side of
   the contract - item naming, flags, and that no credentials file is written -
-  not Keychain semantics, so it wants a real run on a Mac before release.
+  not Keychain semantics. It has not yet been run against a real Keychain,
+  so treat macOS as experimental until someone confirms it on hardware.
 
 ### Fixed
 

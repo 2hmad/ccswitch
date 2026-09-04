@@ -45,7 +45,7 @@ git clone https://github.com/2hmad/ccswitch
 cd ccswitch && ./install.sh
 ```
 
-Requires `bash`, `python3`, and Claude Code. Works on Linux and macOS; see [Platform support](#platform-support).
+Requires `bash`, `python3`, and Claude Code. Linux is supported; macOS is experimental — see [Platform support](#platform-support).
 
 ## Usage
 
@@ -230,7 +230,7 @@ Then `ccswitch list` to confirm all of them are there.
 | Platform      | Status                                           |
 | ------------- | ------------------------------------------------ |
 | Linux         | Supported                                        |
-| macOS         | Supported via the login keychain — see below     |
+| macOS         | Experimental — works via the login keychain, but not yet confirmed on real hardware ([#1](https://github.com/2hmad/ccswitch/issues/1)) |
 | Windows / WSL | WSL behaves like Linux and should work; untested |
 
 On macOS, Claude Code keeps the OAuth credential in your login keychain rather than in `~/.claude/.credentials.json`, so ccswitch reads and writes it there with `security(1)`. It derives the same item Claude Code does:
@@ -239,6 +239,8 @@ On macOS, Claude Code keeps the OAuth credential in your login keychain rather t
 | ------- | --------------------------------------------------------------------------------------------- |
 | Service | `Claude Code-credentials`, plus `-<sha256(config dir)[:8]>` when `CLAUDE_CONFIG_DIR` is set   |
 | Account | `$USER`, or `claude-code-user` if that is unset or contains anything outside `[a-zA-Z0-9._-]` |
+
+This path has been exercised against a `security(1)` stand-in but not yet against a real Keychain, so treat it as experimental and report anything odd on [#1](https://github.com/2hmad/ccswitch/issues/1).
 
 `ccswitch doctor` prints what it resolved to. The first switch may raise a keychain prompt — macOS asks before letting a new binary read an item it did not create. Choose **Always Allow** if you would rather not be asked again.
 
