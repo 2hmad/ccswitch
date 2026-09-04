@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-04
+
 ### Added
 
 - `ccswitch refresh [name|--all] [--force]` refreshes a stored account's OAuth
@@ -15,6 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. a daily cron) makes real API calls only for accounts that actually
   need it. Meant to keep parked accounts' longer-lived refresh tokens from
   lapsing from disuse.
+
+### Fixed
+
+- An interrupted `refresh` no longer strands you signed in as whichever account
+  the loop was holding. The live credential is restored from a trap on `INT`,
+  `TERM` and `EXIT`, and the temporary stash directory is always removed.
+- `ccswitch refresh --force` with no account name is now read as "all accounts,
+  forced" instead of failing with `no such account '--force'`.
+- `refresh` reports success only when the token's expiry actually advanced.
+  Previously a call that exited cleanly without renewing anything printed a
+  success line beside an expired timestamp.
+
+### Changed
+
+- CI runs shellcheck at `-S style` via `ludeeus/action-shellcheck` rather than
+  the distribution package, and on `v*` tags verifies that `VERSION` in
+  `bin/ccswitch` matches the tag and that this file has a matching section.
 
 ## [0.1.0] - 2026-09-04
 
@@ -61,5 +80,6 @@ First release.
   accounts you are not currently using; it does not extend how long any token
   lasts.
 
-[Unreleased]: https://github.com/2hmad/ccswitch/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/2hmad/ccswitch/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/2hmad/ccswitch/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/2hmad/ccswitch/releases/tag/v0.1.0
