@@ -2,21 +2,36 @@ name: ci
 
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: shellcheck
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y shellcheck
-          shellcheck -S warning bin/ccswitch install.sh
+        uses: ludeeus/action-shellcheck@master
+        env:
+          SHELLCHECK_OPTS: -S style
+        with:
+          scandir: "."
+
       - name: bash syntax
-        run: bash -n bin/ccswitch && bash -n install.sh
+        run: |
+          bash -n bin/ccswitch
+          bash -n install.sh
+          bash -n test/smoke.sh
+          bash -n scripts/changelog-extract.sh
+
       - name: smoke test
         run: bash test/smoke.sh
+
       - name: VERSION matches tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -27,11 +42,42 @@ jobs:
             echo "::error::bin/ccswitch declares VERSION=$v but the tag is $tag"
             exit 1
           fi
-      - name: CHANGELOG has an entry for the tag
+
+      - name: CHANGELOG has notes for the tag
         if: startsWith(github.ref, 'refs/tags/v')
+        run: bash scripts/changelog-extract.sh "${GITHUB_REF#refs/tags/}" > /dev/null
+
+  release:
+    needs: lint
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release notes from CHANGELOG
+        id: notes
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          grep -q "^## \[${tag#v}\]" CHANGELOG.md || {
-            echo "::error::CHANGELOG.md has no '## [${tag#v}]' section"
-            exit 1
-          }
+          bash scripts/changelog-extract.sh "$tag" > NOTES.md
+          {
+            echo
+            echo "---"
+            echo
+            echo "**Install**"
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${tag}/install.sh | bash"
+            echo '```'
+          } >> NOTES.md
+          cat NOTES.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes-file NOTES.md \
+            --verify-tag
