@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- README documents how to schedule `ccswitch refresh --all`, with worked
+  cron and systemd user timer examples and the two things that bite in
+  practice: cron's bare `PATH` hiding the `claude` binary, and `refresh`
+  refusing to run while a `claude` process is alive.
+
 ## [0.2.0] - 2026-09-04
 
 ### Added

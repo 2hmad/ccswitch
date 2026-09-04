@@ -90,6 +90,81 @@ claude                    # runs as personal
 | `ccswitch doctor` | Diagnose the setup |
 | `ccswitch completion bash\|zsh` | Print a completion script |
 
+### Keeping parked accounts alive
+
+An account you haven't switched to in a few weeks can lose its refresh token, which forces a full `ccswitch login <name>` with a browser round-trip. `ccswitch refresh --all` prevents that: it restores each stored account in turn, makes one tiny API call to exercise its token, saves the renewed credential back, and returns you to the account you started on.
+
+Run it by hand whenever it occurs to you:
+
+```bash
+ccswitch refresh --all
+```
+
+Or schedule it daily. Accounts whose access token is still valid are skipped without any API call, so a typical run does nothing at all:
+
+```console
+$ ccswitch refresh --all
+skip    work  (you@example.com)  valid 6h 2m - not due yet
+refreshed personal  (you@example.net)  valid 8h 0m
+```
+
+#### cron
+
+`crontab -e`, then:
+
+```cron
+PATH=/home/you/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+30 4 * * * ccswitch refresh --all >> "$HOME/.cache/ccswitch-refresh.log" 2>&1
+```
+
+Two things that trip people up:
+
+- **Set `PATH`.** cron runs with a bare `/usr/bin:/bin`, and `refresh` needs both `ccswitch` and the `claude` binary. Run `command -v claude` and put that directory first — it's usually `~/.local/bin`. Without this the job dies with `the 'claude' command was not found on PATH`.
+- **Pick an hour you're not working.** `refresh` refuses to run while a `claude` process is alive, so a job that fires mid-session just logs an error and does nothing. (A run where every account is skipped doesn't check this, so it stays quiet either way.)
+
+#### systemd user timer
+
+Better on a laptop, because `Persistent=true` catches up on a run that was missed while the machine was asleep — cron simply skips it.
+
+`~/.config/systemd/user/ccswitch-refresh.service`:
+
+```ini
+[Unit]
+Description=Refresh parked ccswitch account tokens
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/ccswitch refresh --all
+```
+
+`~/.config/systemd/user/ccswitch-refresh.timer`:
+
+```ini
+[Unit]
+Description=Daily ccswitch token refresh
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable it:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now ccswitch-refresh.timer
+
+systemctl --user list-timers ccswitch-refresh.timer   # when it next fires
+journalctl --user -u ccswitch-refresh.service         # what happened last time
+```
+
+If you want it to run while you're logged out, also `sudo loginctl enable-linger $USER`.
+
 ## How it works
 
 Claude Code keeps two pieces of account state:
@@ -114,7 +189,7 @@ Before switching away, ccswitch saves the live credential back into the account 
 
 **The vault holds live session tokens.** `~/.config/ccswitch` is created mode 700 and files mode 600. `ccswitch backup` produces an archive containing those tokens — encrypt it if you keep it anywhere but your own disk.
 
-**Tokens still expire.** The access token (~8h) refreshes itself automatically whenever the *active* account is used — Claude Code does this on its own. Accounts sitting parked in the vault aren't touched by anything, though, so their refresh token (~28 days) can eventually lapse, forcing a full `ccswitch login <name>` re-authentication. Run `ccswitch refresh --all` occasionally (or on a cron job, e.g. daily) to quietly touch every stored account and keep their refresh tokens alive without a browser sign-in. It only makes a real (tiny, tool-free) API call — and only for accounts whose access token has actually expired, since a still-valid one means the refresh token isn't at risk yet — so it won't burn much of an account's session quota. `ccswitch list` shows how long each account's access token has left.
+**Tokens still expire.** The access token (~8h) refreshes itself automatically whenever the *active* account is used — Claude Code does this on its own. Accounts sitting parked in the vault aren't touched by anything, though, so their refresh token (~28 days) can eventually lapse, forcing a full `ccswitch login <name>` re-authentication. Run `ccswitch refresh --all` occasionally, or schedule it — see [Keeping parked accounts alive](#keeping-parked-accounts-alive). It only makes a real (tiny, tool-free) API call — and only for accounts whose access token has actually expired, since a still-valid one means the refresh token isn't at risk yet — so it won't burn much of an account's session quota. `ccswitch list` shows how long each account's access token has left.
 
 **`CLAUDE_CONFIG_DIR` takes priority.** If it's set, ccswitch operates on that directory instead of `~/.claude`. `ccswitch doctor` will warn you. If you're migrating from per-account config dirs, unset it first.
 
