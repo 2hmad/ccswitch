@@ -17,3 +17,8 @@ jobs:
         run: bash -n bin/ccswitch && bash -n install.sh
       - name: smoke test
         run: bash test/smoke.sh
+      - name: version matches tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          v=$(grep -oP 'VERSION="\K[^"]+' bin/ccswitch)
+          [ "v$v" = "${GITHUB_REF#refs/tags/}" ] || { echo "VERSION=$v does not match ${GITHUB_REF#refs/tags/}"; exit 1; }
