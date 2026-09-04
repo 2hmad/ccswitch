@@ -6,7 +6,7 @@
 # session history, settings and CLAUDE.md all live in one ~/.claude.
 # Only the credential (and the identity it belongs to) is swapped.
 #
-# https://github.com/YOURNAME/ccswitch
+# https://github.com/2hmad/ccswitch
 # MIT licensed.
 
 set -euo pipefail
@@ -51,7 +51,7 @@ case "$(uname -s)" in
   Darwin)
     if [ ! -f "$CRED" ]; then
       die "on macOS Claude Code stores credentials in the Keychain, which ccswitch does not support yet.
-       Follow https://github.com/YOURNAME/ccswitch/issues/1 or contribute a keychain backend."
+       Follow https://github.com/2hmad/ccswitch/issues/1 or contribute a keychain backend."
     fi
     ;;
   *) warn "untested platform: $(uname -s)" ;;

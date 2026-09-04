@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ccswitch installer
-#   curl -fsSL https://raw.githubusercontent.com/YOURNAME/ccswitch/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/2hmad/ccswitch/main/install.sh | bash
 set -euo pipefail
 
-REPO="${CCSWITCH_REPO:-YOURNAME/ccswitch}"
+REPO="${CCSWITCH_REPO:-2hmad/ccswitch}"
 REF="${CCSWITCH_REF:-main}"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 URL="https://raw.githubusercontent.com/$REPO/$REF/bin/ccswitch"
