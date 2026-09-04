@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Nothing yet.
+- `ccswitch refresh [name|--all] [--force]` refreshes a stored account's OAuth
+  tokens in place, without a browser re-login. Skips accounts whose access
+  token is still valid (their refresh token isn't at risk), so routine use
+  (e.g. a daily cron) makes real API calls only for accounts that actually
+  need it. Meant to keep parked accounts' longer-lived refresh tokens from
+  lapsing from disuse.
 
 ## [0.1.0] - 2026-09-04
 
