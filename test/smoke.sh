@@ -10,6 +10,10 @@ export HOME="$TMP"
 export PATH="$ROOT/bin:$PATH"
 export NO_COLOR=1
 unset CLAUDE_CONFIG_DIR
+# Pin the vault inside TMP. VAULT falls back to $XDG_CONFIG_HOME, which
+# escapes $HOME - without this the test would operate on a real vault.
+export CCSWITCH_HOME="$TMP/vault"
+unset XDG_CONFIG_HOME
 
 pass=0; fail=0
 ok()   { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }

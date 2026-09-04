@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the contract - item naming, flags, and that no credentials file is written -
   not Keychain semantics, so it wants a real run on a Mac before release.
 
+### Fixed
+
+- The test scripts pinned their vault with `HOME` alone, but `VAULT` falls back
+  to `$XDG_CONFIG_HOME`, which escapes it. On a machine with that variable set,
+  `test/smoke.sh` ran its `rm`, `rename` and `restore` cases against the real
+  vault instead of a throwaway one. Both scripts now set `CCSWITCH_HOME`.
+
 ### Changed
 
 - README documents how to schedule `ccswitch refresh --all`, with worked

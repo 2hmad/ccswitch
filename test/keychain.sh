@@ -13,6 +13,10 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP"
 export PATH="$ROOT/test/fixtures:$ROOT/bin:$PATH"
 export NO_COLOR=1
+# Pin the vault inside TMP. VAULT falls back to $XDG_CONFIG_HOME, which
+# escapes $HOME - without this the test would operate on a real vault.
+export CCSWITCH_HOME="$TMP/vault"
+unset XDG_CONFIG_HOME
 export CCSWITCH_BACKEND=keychain
 export FAKE_KEYCHAIN="$TMP/keychain"
 export USER=testuser
