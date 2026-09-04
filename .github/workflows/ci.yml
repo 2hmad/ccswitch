@@ -27,10 +27,15 @@ jobs:
           bash -n bin/ccswitch
           bash -n install.sh
           bash -n test/smoke.sh
+          bash -n test/keychain.sh
+          bash -n test/fixtures/security
           bash -n scripts/changelog-extract.sh
 
       - name: smoke test
         run: bash test/smoke.sh
+
+      - name: keychain backend test
+        run: bash test/keychain.sh
 
       - name: VERSION matches tag
         if: startsWith(github.ref, 'refs/tags/v')

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- macOS support. Claude Code stores the OAuth credential in the login keychain
+  there rather than in `~/.claude/.credentials.json`, so ccswitch now reads and
+  writes it with `security(1)`, deriving the same item Claude Code does:
+  service `Claude Code-credentials` (suffixed with the first 8 hex digits of
+  the SHA-256 of the config dir when `CLAUDE_CONFIG_DIR` is set), account
+  `$USER` falling back to `claude-code-user`. All credential access moved
+  behind a small backend layer, so the file and keychain paths share one code
+  path above it. `CCSWITCH_BACKEND=file|keychain` forces the choice, and
+  `ccswitch doctor` reports which store is in use.
+
+  The keychain backend is covered by `test/keychain.sh`, which runs on any
+  platform against a `security(1)` stand-in. That verifies ccswitch's side of
+  the contract - item naming, flags, and that no credentials file is written -
+  not Keychain semantics, so it wants a real run on a Mac before release.
+
 ### Changed
 
 - README documents how to schedule `ccswitch refresh --all`, with worked

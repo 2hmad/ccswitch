@@ -23,6 +23,87 @@ else
 fi
 CRED="$CC_DIR/.credentials.json"
 
+# --- credential backend -----------------------------------------------------
+# Linux keeps the OAuth credential in a file. macOS keeps it in the login
+# keychain, under a service name Claude Code derives from its config dir.
+# Both hold the same JSON, so everything above this layer is backend-agnostic.
+#
+# Service: "Claude Code" + "-credentials" + ("-" + sha256(config dir)[:8] when
+# CLAUDE_CONFIG_DIR is set). Account: $USER, or "claude-code-user" if that is
+# unset or has characters outside [a-zA-Z0-9._-].
+if [ -n "${CCSWITCH_BACKEND:-}" ]; then
+  BACKEND="$CCSWITCH_BACKEND"
+elif [ "$(uname -s)" = "Darwin" ] && [ ! -f "$CRED" ]; then
+  BACKEND="keychain"
+else
+  BACKEND="file"
+fi
+
+kc_service() {
+  local extra=""
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    extra="-$(python3 - "$CC_DIR" <<'PYEOF'
+import hashlib, sys, unicodedata
+d = unicodedata.normalize("NFC", sys.argv[1])
+print(hashlib.sha256(d.encode("utf-8")).hexdigest()[:8])
+PYEOF
+)"
+  fi
+  printf 'Claude Code-credentials%s' "$extra"
+}
+
+kc_account() {
+  local u="${USER:-}"
+  [ -n "$u" ] || u="$(id -un 2>/dev/null || true)"
+  case "$u" in
+    ""|*[!a-zA-Z0-9._-]*) u="claude-code-user" ;;
+  esac
+  printf '%s' "$u"
+}
+
+# Present? 0 if a live credential exists.
+cred_exists() {
+  if [ "$BACKEND" = "keychain" ]; then
+    security find-generic-password -a "$(kc_account)" -s "$(kc_service)" >/dev/null 2>&1
+  else
+    [ -f "$CRED" ]
+  fi
+}
+
+# Print the live credential JSON on stdout.
+cred_read() {
+  if [ "$BACKEND" = "keychain" ]; then
+    security find-generic-password -a "$(kc_account)" -s "$(kc_service)" -w 2>/dev/null
+  else
+    cat "$CRED"
+  fi
+}
+
+# Install $1 (a file of credential JSON) as the live credential.
+cred_write() {  # $1=source file
+  if [ "$BACKEND" = "keychain" ]; then
+    # -X takes hex, so JSON quoting never reaches the shell; -U updates in
+    # place instead of failing with errSecDuplicateItem. This mirrors how
+    # Claude Code itself writes the item.
+    local hex; hex="$(python3 -c 'import sys;sys.stdout.write(open(sys.argv[1],"rb").read().hex())' "$1")"
+    security add-generic-password -U -a "$(kc_account)" -s "$(kc_service)" -X "$hex" \
+      || die "could not write to the login keychain (is it unlocked?)"
+  else
+    mkdir -p "$CC_DIR"
+    cp "$1" "$CRED"
+    chmod 600 "$CRED"
+  fi
+}
+
+# Remove the live credential.
+cred_clear() {
+  if [ "$BACKEND" = "keychain" ]; then
+    security delete-generic-password -a "$(kc_account)" -s "$(kc_service)" >/dev/null 2>&1 || true
+  else
+    rm -f "$CRED"
+  fi
+}
+
 VAULT="${CCSWITCH_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ccswitch}"
 ACCOUNTS="$VAULT/accounts"
 ACTIVE_FILE="$VAULT/active"
@@ -47,15 +128,14 @@ die()  { printf '%serror:%s %s\n' "$RED" "$RST" "$*" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || die "python3 is required but not installed"
 
 case "$(uname -s)" in
-  Linux) ;;
-  Darwin)
-    if [ ! -f "$CRED" ]; then
-      die "on macOS Claude Code stores credentials in the Keychain, which ccswitch does not support yet.
-       Follow https://github.com/2hmad/ccswitch/issues/1 or contribute a keychain backend."
-    fi
-    ;;
+  Linux|Darwin) ;;
   *) warn "untested platform: $(uname -s)" ;;
 esac
+
+if [ "$BACKEND" = "keychain" ]; then
+  command -v security >/dev/null 2>&1 ||
+    die "the 'security' command was not found - it is required to read the macOS keychain"
+fi
 
 mkdir -p "$ACCOUNTS"
 chmod 700 "$VAULT" 2>/dev/null || true
@@ -139,9 +219,11 @@ claude_running() {
 # Snapshot the live credential+identity into an account slot.
 capture_into() {  # $1=account name
   local n="$1" d="$ACCOUNTS/$1"
-  [ -f "$CRED" ] || die "no live credential at $CRED - run 'claude' and /login first"
+  cred_exists || die "no live credential found - run 'claude' and /login first"
   mkdir -p "$d"
-  cp "$CRED" "$d/credentials.json"
+  cred_read > "$d/credentials.json" || true
+  [ -s "$d/credentials.json" ] ||
+    { rm -f "$d/credentials.json"; die "the live credential came back empty - refusing to store it as '$n'"; }
   identity_extract "$CC_JSON" > "$d/identity.json"
   chmod 700 "$d"; chmod 600 "$d"/*.json
 }
@@ -150,9 +232,7 @@ capture_into() {  # $1=account name
 restore_from() {  # $1=account name
   local n="$1" d="$ACCOUNTS/$1"
   [ -f "$d/credentials.json" ] || die "account '$n' has no stored credential"
-  mkdir -p "$CC_DIR"
-  cp "$d/credentials.json" "$CRED"
-  chmod 600 "$CRED"
+  cred_write "$d/credentials.json"
   [ -f "$d/identity.json" ] && identity_apply "$CC_JSON" "$d/identity.json"
   printf '%s\n' "$n" > "$ACTIVE_FILE"
 }
@@ -162,7 +242,7 @@ restore_from() {  # $1=account name
 save_active() {
   local cur; cur="$(active_name)"
   [ -n "$cur" ] || return 0
-  [ -f "$CRED" ] || return 0
+  cred_exists || return 0
   capture_into "$cur"
 }
 
@@ -230,7 +310,7 @@ cmd_login() {
   save_active
 
   # Clear the live credential so Claude Code prompts for a fresh sign-in.
-  rm -f "$CRED"
+  cred_clear
   local tmp_id; tmp_id="$(mktemp)"
   echo '{}' > "$tmp_id"
   identity_apply "$CC_JSON" "$tmp_id"
@@ -241,7 +321,7 @@ cmd_login() {
   claude || true
   info ""
 
-  if [ ! -f "$CRED" ]; then
+  if ! cred_exists; then
     warn "no credential was written - sign-in did not complete. Nothing saved."
     local cur; cur="$(active_name)"
     [ -n "$cur" ] && acct_exists "$cur" && { restore_from "$cur"; info "restored previous account: $cur"; }
@@ -316,7 +396,7 @@ cmd_refresh() {
   local stash; stash="$(mktemp -d)"
   # Preserve whatever is live now (tracked or not) so it can be put back
   # exactly as found, even if it's not one of the accounts being refreshed.
-  [ -f "$CRED" ] && cp "$CRED" "$stash/credentials.json"
+  cred_exists && cred_read > "$stash/credentials.json"
   identity_extract "$CC_JSON" > "$stash/identity.json"
 
   for n in "${todo[@]}"; do
@@ -336,12 +416,12 @@ cmd_refresh() {
   if [ -n "$started" ] && acct_exists "$started"; then
     restore_from "$started"
   elif [ -f "$stash/credentials.json" ]; then
-    cp "$stash/credentials.json" "$CRED"
-    chmod 600 "$CRED"
+    cred_write "$stash/credentials.json"
     identity_apply "$CC_JSON" "$stash/identity.json"
     rm -f "$ACTIVE_FILE"
   else
-    rm -f "$CRED" "$ACTIVE_FILE"
+    cred_clear
+    rm -f "$ACTIVE_FILE"
   fi
   rm -rf "$stash"
 }
@@ -369,7 +449,8 @@ cmd_doctor() {
   printf '  claude on PATH   : %s\n' "$(command -v claude || echo "${RED}not found${RST}")"
   printf '  config dir       : %s\n' "$CC_DIR"
   printf '  config json      : %s%s\n' "$CC_JSON" "$([ -f "$CC_JSON" ] || echo "  ${YLW}(missing)${RST}")"
-  printf '  live credential  : %s\n' "$([ -f "$CRED" ] && echo present || echo "${YLW}absent${RST}")"
+  printf '  credential store : %s\n' "$(if [ "$BACKEND" = keychain ]; then printf 'macOS keychain (service %s, account %s)' "$(kc_service)" "$(kc_account)"; else printf '%s' "$CRED"; fi)"
+  printf '  live credential  : %s\n' "$(cred_exists && echo present || echo "${YLW}absent${RST}")"
   printf '  vault            : %s\n' "$VAULT"
   printf '  active account   : %s\n' "$(active_name)${_none}"
   printf '  accounts stored  : %s\n' "$(find "$ACCOUNTS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
@@ -450,6 +531,8 @@ ${B}EXAMPLE${RST}
 
 ${B}ENVIRONMENT${RST}
   CCSWITCH_HOME    vault location (default \$XDG_CONFIG_HOME/ccswitch)
+  CCSWITCH_BACKEND credential store: 'file' or 'keychain' (default: keychain
+                   on macOS when no credentials file exists, else file)
   NO_COLOR         disable colour
 EOF
 }

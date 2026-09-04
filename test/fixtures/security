@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# A stand-in for macOS security(1), just enough to exercise ccswitch's keychain
+# backend on Linux. Items live as files under $FAKE_KEYCHAIN, named by
+# service+account, holding the raw secret. Mirrors the flags ccswitch uses and
+# the exit codes it branches on.
+set -uo pipefail
+
+store="${FAKE_KEYCHAIN:?FAKE_KEYCHAIN must be set}"
+mkdir -p "$store"
+
+cmd="${1:-}"; shift || true
+acct=""; svc=""; hex=""; want_pw=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -a) acct="$2"; shift 2 ;;
+    -s) svc="$2"; shift 2 ;;
+    -X) hex="$2"; shift 2 ;;
+    -w) want_pw=1; shift ;;
+    -U) shift ;;
+    *)  shift ;;
+  esac
+done
+
+key="$store/$(printf '%s' "$svc::$acct" | tr -c 'a-zA-Z0-9._-' '_')"
+
+case "$cmd" in
+  add-generic-password)
+    printf '%s' "$hex" | python3 -c 'import sys;sys.stdout.buffer.write(bytes.fromhex(sys.stdin.read()))' > "$key" || exit 1
+    ;;
+  find-generic-password)
+    [ -f "$key" ] || { echo "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain." >&2; exit 44; }
+    if [ "$want_pw" = 1 ]; then cat "$key"; fi
+    ;;
+  delete-generic-password)
+    [ -f "$key" ] || { echo "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain." >&2; exit 44; }
+    rm -f "$key"
+    ;;
+  *) echo "fake security: unsupported command '$cmd'" >&2; exit 2 ;;
+esac
+
+exit 0
