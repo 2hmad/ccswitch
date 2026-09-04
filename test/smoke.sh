@@ -82,6 +82,12 @@ check "rm"                   "$(ccswitch list | grep -c example.com)"    "1"
 ccswitch restore "$TMP/v.tgz" >/dev/null
 check "restore"              "$(ccswitch list | grep -c example.com)"    "2"
 
+# both accounts still hold their original, unexpired tokens - refresh should
+# skip them without needing 'claude' on PATH or touching current
+ccswitch refresh --all >/dev/null
+check "refresh: skips valid tokens, leaves current" "$(ccswitch current)" "gamma"
+check "refresh: accounts untouched"          "$(ccswitch list | grep -c example.com)" "2"
+
 # error paths must exit non-zero
 must_fail() {  # $1=label, rest=command
   local label="$1"; shift
@@ -91,6 +97,7 @@ must_fail "unknown account rejected" ccswitch use nosuch
 must_fail "duplicate name rejected"  ccswitch add gamma
 must_fail "invalid name rejected"    ccswitch add 'bad/nm'
 must_fail "login needs a name"       ccswitch login
+must_fail "refresh: unknown account rejected" ccswitch refresh nosuch
 
 ccswitch doctor >/dev/null 2>&1 || true
 ok "doctor runs"

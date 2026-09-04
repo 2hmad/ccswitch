@@ -82,6 +82,7 @@ claude                    # runs as personal
 | `ccswitch list` | Accounts, emails, token status |
 | `ccswitch current` | Print the active account name |
 | `ccswitch save` | Write the live token back to the active slot |
+| `ccswitch refresh [name\|--all]` | Refresh a stored token before it goes stale |
 | `ccswitch rm <name>` | Forget an account |
 | `ccswitch rename <old> <new>` | Rename an account |
 | `ccswitch backup [file]` | Archive the vault |
@@ -113,7 +114,7 @@ Before switching away, ccswitch saves the live credential back into the account 
 
 **The vault holds live session tokens.** `~/.config/ccswitch` is created mode 700 and files mode 600. `ccswitch backup` produces an archive containing those tokens — encrypt it if you keep it anywhere but your own disk.
 
-**Tokens still expire.** ccswitch does not extend token lifetime; it only saves you from re-authenticating the accounts you aren't currently using. `ccswitch list` shows how long each has left, and `ccswitch login <name>` refreshes one in place.
+**Tokens still expire.** The access token (~8h) refreshes itself automatically whenever the *active* account is used — Claude Code does this on its own. Accounts sitting parked in the vault aren't touched by anything, though, so their refresh token (~28 days) can eventually lapse, forcing a full `ccswitch login <name>` re-authentication. Run `ccswitch refresh --all` occasionally (or on a cron job, e.g. daily) to quietly touch every stored account and keep their refresh tokens alive without a browser sign-in. It only makes a real (tiny, tool-free) API call — and only for accounts whose access token has actually expired, since a still-valid one means the refresh token isn't at risk yet — so it won't burn much of an account's session quota. `ccswitch list` shows how long each account's access token has left.
 
 **`CLAUDE_CONFIG_DIR` takes priority.** If it's set, ccswitch operates on that directory instead of `~/.claude`. `ccswitch doctor` will warn you. If you're migrating from per-account config dirs, unset it first.
 
@@ -160,6 +161,10 @@ Then `ccswitch list` to confirm all of them are there.
 ## Contributing
 
 Issues and pull requests welcome. Please run `shellcheck bin/ccswitch` before submitting; CI runs it on every push.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
