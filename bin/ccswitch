@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.4.0"
+VERSION="0.4.1"
 
 # --- locations --------------------------------------------------------------
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -243,12 +243,33 @@ validate_name() {
   esac
 }
 
+# True only when an interactive Claude Code session is running. Several
+# long-lived helpers share the same binary and process name - notably the
+# Claude-in-Chrome native messaging host, which Chrome keeps alive for as long
+# as the browser is open. Matching those would block every switch and login
+# indefinitely, so candidates are filtered by their command line.
+claude_session_pids() {
+  local bin pids p cmd
+  bin="$(command -v claude 2>/dev/null)" || return 0
+  [ -n "$bin" ] || return 0
+  pids="$( { pgrep -x claude; pgrep -f -- "$bin"; } 2>/dev/null | sort -un)"
+  for p in $pids; do
+    cmd="$(ps -o args= -p "$p" 2>/dev/null)" || continue
+    [ -n "$cmd" ] || continue
+    case "$cmd" in
+      # Chrome's native messaging host, not a session
+      *--chrome-native-host*) continue ;;
+      # stdio MCP server, likewise long-lived and credential-free
+      *" mcp serve"*|*" mcp start"*) continue ;;
+      # ccswitch itself, or a shell whose command line merely mentions the path
+      *ccswitch*) continue ;;
+    esac
+    printf '%s\n' "$p"
+  done
+}
+
 claude_running() {
-  local bin
-  bin="$(command -v claude 2>/dev/null)" || return 1
-  [ -n "$bin" ] || return 1
-  pgrep -x claude >/dev/null 2>&1 && return 0
-  pgrep -f -- "$bin" >/dev/null 2>&1
+  [ -n "$(claude_session_pids)" ]
 }
 
 # Snapshot the live credential+identity into an account slot.
@@ -584,6 +605,7 @@ cmd_doctor() {
   printf '  config json      : %s%s\n' "$CC_JSON" "$([ -f "$CC_JSON" ] || echo "  ${YLW}(missing)${RST}")"
   printf '  credential store : %s\n' "$(if [ "$BACKEND" = keychain ]; then printf 'macOS keychain (service %s, account %s)' "$(kc_service)" "$(kc_account)"; else printf '%s' "$CRED"; fi)"
   printf '  live credential  : %s\n' "$(cred_exists && echo present || echo "${YLW}absent${RST}")"
+  printf '  claude sessions  : %s\n' "$(claude_session_pids | tr '\n' ' ' | sed 's/ $//' || true)$(claude_running || echo none)"
   printf '  vault            : %s\n' "$VAULT"
   printf '  active account   : %s\n' "$(active_name)${_none}"
   printf '  accounts stored  : %s\n' "$(find "$ACCOUNTS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"

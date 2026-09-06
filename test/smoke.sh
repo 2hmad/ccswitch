@@ -164,6 +164,25 @@ check "refresh skips a broken slot" "$(ccswitch refresh --all 2>&1 | grep -c 'si
 # restore the good state for the remaining checks
 ccswitch restore "$TMP/v.tgz" >/dev/null
 
+# Long-lived helpers share the claude binary and process name - the
+# Claude-in-Chrome native host lives as long as the browser - and matching them
+# would block every switch and login for as long as Chrome is open.
+mkdir -p "$TMP/fakebin"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$TMP/fakebin/claude"
+chmod +x "$TMP/fakebin/claude"
+( PATH="$TMP/fakebin:$PATH" exec "$TMP/fakebin/claude" --chrome-native-host ) &
+fake_pid=$!
+( PATH="$TMP/fakebin:$PATH" exec "$TMP/fakebin/claude" ) &
+real_pid=$!
+sleep 1
+# shellcheck source=/dev/null
+source <(sed -n '/^claude_session_pids()/,/^}/p' "$ROOT/bin/ccswitch")
+seen="$(PATH="$TMP/fakebin:$PATH" claude_session_pids)"
+check "chrome native host is not a session" "$(printf '%s\n' "$seen" | grep -c "^$fake_pid$")" "0"
+check "a real session is still detected"    "$(printf '%s\n' "$seen" | grep -c "^$real_pid$")" "1"
+kill "$fake_pid" "$real_pid" 2>/dev/null || true
+wait "$fake_pid" "$real_pid" 2>/dev/null || true
+
 # error paths must exit non-zero
 must_fail() {  # $1=label, rest=command
   local label="$1"; shift

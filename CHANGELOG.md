@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-06
+
+### Fixed
+
+- `ccswitch use` and `ccswitch login` refused to run with "a claude process is
+  running" even after every Claude Code session was closed. Several long-lived
+  helpers share the `claude` binary and process name - above all the
+  Claude-in-Chrome native messaging host, which Chrome keeps alive for as long
+  as the browser is open - and both `pgrep -x claude` and `pgrep -f <binary>`
+  matched them. With Chrome open, ccswitch was blocked indefinitely and the only
+  way through was `--force`, which `login` does not accept at all.
+
+  Candidates are now filtered by command line, so the Chrome host, a stdio
+  `mcp serve`, and ccswitch's own process no longer count as sessions.
+
+- `ccswitch doctor` lists the session PIDs it detects, so a false positive is
+  visible rather than guesswork.
+
 ## [0.4.0] - 2026-09-06
 
 ### Fixed
