@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-06
+
+### Fixed
+
+- `ccswitch save` wrote the live credential into the active account without
+  checking it belonged there. Signing in with `/login` inside Claude Code
+  changes the live account while ccswitch still points at the previous one, so
+  a save in that state silently overwrote a healthy slot with another account's
+  credential - destroying it. It now refuses, and names the account the
+  credential actually belongs to.
+
+### Added
+
+- `ccswitch save <name>` stores the live credential into a named account. This
+  is the missing step after a `/login` done inside Claude Code: previously the
+  only way to adopt that credential was `ccswitch rm <name>` followed by
+  `ccswitch add <name>`.
+
 ## [0.4.1] - 2026-09-06
 
 ### Fixed

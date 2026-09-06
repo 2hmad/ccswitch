@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.4.1"
+VERSION="0.4.2"
 
 # --- locations --------------------------------------------------------------
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -473,11 +473,41 @@ cmd_rename() {
   info "renamed $o -> $n"
 }
 
+# Which stored account, if any, the live identity belongs to.
+account_for_live_identity() {
+  local d n
+  for d in "$ACCOUNTS"/*/; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d")"
+    if identity_matches "$n"; then printf '%s\n' "$n"; return 0; fi
+  done
+  return 1
+}
+
 cmd_save() {
-  local cur; cur="$(active_name)"
-  [ -n "$cur" ] || die "no active account to save"
-  capture_into "$cur"
-  info "saved live credential into $cur"
+  local n="${1:-}"
+  if [ -n "$n" ]; then
+    acct_exists "$n" || die "no such account '$n' (see: ccswitch list)"
+  else
+    n="$(active_name)"
+    [ -n "$n" ] || die "no active account to save"
+    # Signing in with /login inside Claude Code changes the live account
+    # without telling ccswitch, leaving 'active' pointing elsewhere. Saving
+    # blindly would write this credential over a different account's slot.
+    if ! identity_matches "$n"; then
+      local owner; owner="$(account_for_live_identity || true)"
+      if [ -n "$owner" ]; then
+        die "the live credential belongs to '$owner', not the active account '$n'.
+       Run 'ccswitch save $owner' to store it there."
+      fi
+      die "the live credential does not match the active account '$n', and no
+       stored account matches it. Run 'ccswitch add <name>' to store it as new,
+       or 'ccswitch save $n' to write it into '$n' anyway."
+    fi
+  fi
+  capture_into "$n"
+  printf '%s\n' "$n" > "$ACTIVE_FILE"
+  info "${GRN}saved${RST} live credential into $n"
 }
 
 # How close to the refresh token's expiry we start renewing it, in days.
@@ -627,7 +657,7 @@ _ccswitch() {
   cur="${COMP_WORDS[COMP_CWORD]}"; prev="${COMP_WORDS[COMP_CWORD-1]}"
   accounts=$(ls -1 "${CCSWITCH_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ccswitch}/accounts" 2>/dev/null)
   case "$prev" in
-    use|rm|rename|login|refresh) COMPREPLY=($(compgen -W "$accounts" -- "$cur")); return;;
+    use|rm|rename|login|refresh|save) COMPREPLY=($(compgen -W "$accounts" -- "$cur")); return;;
   esac
   COMPREPLY=($(compgen -W "use add login list current rm rename save refresh backup restore doctor completion help version" -- "$cur"))
 }
@@ -643,7 +673,7 @@ _ccswitch() {
   if (( CURRENT == 2 )); then
     _describe 'command' cmds
     _describe 'account' accounts
-  elif [[ $words[2] == (use|rm|rename|login|refresh) ]]; then
+  elif [[ $words[2] == (use|rm|rename|login|refresh|save) ]]; then
     _describe 'account' accounts
   fi
 }
@@ -668,7 +698,7 @@ ${B}USAGE${RST}
   ccswitch add <name>            store the currently signed-in account
   ccswitch list                  list accounts, emails and token status
   ccswitch current               print the active account name
-  ccswitch save                  write the live token back to the active slot
+  ccswitch save [name]           write the live token back to its account
   ccswitch refresh [name|--all] [--force]
                                   refresh a stored token before it goes stale
   ccswitch rm <name>             forget an account
@@ -711,7 +741,7 @@ case "$cmd" in
   login)              cmd_login "${1:-}" ;;
   list|ls)            cmd_list ;;
   current)            cmd_current ;;
-  save)               cmd_save ;;
+  save)               cmd_save "${1:-}" ;;
   refresh)            cmd_refresh "${1:-}" "${2:-}" ;;
   rm|remove|delete)   cmd_rm "${1:-}" ;;
   rename|mv)          cmd_rename "${1:-}" "${2:-}" ;;

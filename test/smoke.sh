@@ -183,6 +183,21 @@ check "a real session is still detected"    "$(printf '%s\n' "$seen" | grep -c "
 kill "$fake_pid" "$real_pid" 2>/dev/null || true
 wait "$fake_pid" "$real_pid" 2>/dev/null || true
 
+# Signing in with /login inside Claude Code changes the live account without
+# telling ccswitch. A blind 'save' would then write that credential over a
+# different account's slot.
+seed_login UID-B b@example.com TOK-B9 9      # live is beta's, active is gamma
+if ccswitch save >/dev/null 2>&1; then bad "save refuses a mismatched identity"; else ok "save refuses a mismatched identity"; fi
+check "save names the owning account" \
+  "$(ccswitch save 2>&1 | grep -c "belongs to 'beta'")" "1"
+check "mismatched save left the active slot alone" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/gamma/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-ROTATED"
+ccswitch save beta >/dev/null
+check "targeted save stores into the named slot" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-B9"
+
 # error paths must exit non-zero
 must_fail() {  # $1=label, rest=command
   local label="$1"; shift

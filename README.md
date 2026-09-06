@@ -63,6 +63,14 @@ Already signed in as one of them? Capture it without a fresh login:
 ccswitch add work
 ```
 
+Signed in with `/login` inside Claude Code instead? That changes the live account without telling ccswitch, so point it at the right slot afterwards:
+
+```bash
+ccswitch save work        # adopt the live credential into 'work'
+```
+
+A bare `ccswitch save` writes into the active account, and refuses if the live credential belongs to a different one — it names the account it actually belongs to.
+
 Then switch whenever you like:
 
 ```bash
@@ -81,7 +89,7 @@ claude                    # runs as personal
 | `ccswitch add <name>`            | Store the account you're already signed in as |
 | `ccswitch list`                  | Accounts, emails, token status                |
 | `ccswitch current`               | Print the active account name                 |
-| `ccswitch save`                  | Write the live token back to the active slot  |
+| `ccswitch save [name]`           | Write the live token back to its account      |
 | `ccswitch refresh [name\|--all] [--force]` | Renew a token as its refresh token nears expiry |
 | `ccswitch rm <name>`             | Forget an account                             |
 | `ccswitch rename <old> <new>`    | Rename an account                             |
