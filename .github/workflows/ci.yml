@@ -37,6 +37,16 @@ jobs:
       - name: keychain backend test
         run: bash test/keychain.sh
 
+      - name: package.json version matches VERSION
+        run: |
+          v=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/ccswitch)
+          p=$(python3 -c "import json;print(json.load(open('package.json'))['version'])")
+          echo "VERSION=$v  package.json=$p"
+          if [ "$v" != "$p" ]; then
+            echo "::error::bin/ccswitch declares VERSION=$v but package.json says $p"
+            exit 1
+          fi
+
       - name: VERSION matches tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -86,3 +96,25 @@ jobs:
             --title "$tag" \
             --notes-file NOTES.md \
             --verify-tag
+
+  publish-npm:
+    needs: lint
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::warning::NPM_TOKEN is not set - skipping the npm publish"
+            exit 0
+          fi
+          npm publish --access public

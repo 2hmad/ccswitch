@@ -1,0 +1,37 @@
+{
+  "name": "@2hmad/ccswitch",
+  "version": "0.5.0",
+  "description": "Switch between multiple Claude Code accounts with one command, keeping MCP servers, plugins, skills, agents and history shared",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "account",
+    "switcher",
+    "oauth",
+    "cli"
+  ],
+  "homepage": "https://github.com/2hmad/ccswitch#readme",
+  "bugs": "https://github.com/2hmad/ccswitch/issues",
+  "license": "MIT",
+  "author": "Ahmed Mohamed",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/2hmad/ccswitch.git"
+  },
+  "bin": {
+    "ccswitch": "bin/ccswitch"
+  },
+  "files": [
+    "bin/ccswitch",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

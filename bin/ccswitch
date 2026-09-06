@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.4.2"
+VERSION="0.5.0"
 
 # --- locations --------------------------------------------------------------
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -413,6 +413,7 @@ cmd_list() {
       "$(fmt_left "${st%%|*}")" "$(fmt_days "${st##*|}")"
   done
   [ "$found" = 1 ] || info "${DIM}no accounts yet - run: ccswitch login <name>${RST}"
+  update_notice
 }
 
 cmd_current() {
@@ -550,6 +551,10 @@ cmd_refresh() {
       todo+=("$n")
     fi
   done
+  # The scheduled refresh is the natural place to do the network check, so
+  # 'list' can show the notice without ever reaching out itself.
+  update_check >/dev/null 2>&1 || true
+
   [ "${#todo[@]}" -gt 0 ] || return 0
 
   command -v claude >/dev/null 2>&1 || die "the 'claude' command was not found on PATH"
@@ -626,6 +631,138 @@ cmd_restore() {
   cmd_list
 }
 
+# --- self-update ------------------------------------------------------------
+REPO_SLUG="${CCSWITCH_REPO:-2hmad/ccswitch}"
+UPDATE_CACHE="$VAULT/.latest-version"
+
+# The real path of this script, following the symlink a package manager leaves
+# in its bin directory - npm's global bin is a symlink farm, so the link name
+# alone says nothing about where the package actually lives.
+self_path() {
+  local self
+  self="$(command -v ccswitch 2>/dev/null || printf '%s' "$0")"
+  python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$self" 2>/dev/null ||
+    printf '%s' "$self"
+}
+
+# Where this copy came from, so 'update' does not fight a package manager.
+install_method() {
+  local self; self="$(self_path)"
+  case "$self" in
+    *node_modules*)    printf 'npm' ;;
+    *Cellar*|*linuxbrew*|*homebrew*) printf 'brew' ;;
+    *)                 printf 'standalone' ;;
+  esac
+}
+
+fetch_url() {  # $1=url -> body on stdout, non-zero on failure
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --max-time 10 "$1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- --timeout=10 "$1"
+  else
+    return 1
+  fi
+}
+
+# Latest published release tag, without the leading v.
+latest_version() {
+  fetch_url "https://api.github.com/repos/$REPO_SLUG/releases/latest" 2>/dev/null |
+    python3 -c 'import json,sys
+try:
+    print((json.load(sys.stdin).get("tag_name") or "").lstrip("v"))
+except Exception:
+    pass' 2>/dev/null
+}
+
+# Numeric compare: 0 when $1 is newer than $2.
+version_gt() {
+  [ "$1" != "$2" ] || return 1
+  python3 - "$1" "$2" <<'PYEOF'
+import sys
+def parts(v):
+    out = []
+    for chunk in v.split("."):
+        num = "".join(c for c in chunk if c.isdigit())
+        out.append(int(num) if num else 0)
+    return out
+a, b = parts(sys.argv[1]), parts(sys.argv[2])
+n = max(len(a), len(b))
+a += [0] * (n - len(a)); b += [0] * (n - len(b))
+raise SystemExit(0 if a > b else 1)
+PYEOF
+}
+
+# Refresh the cached "latest version" note. Network, so only called from
+# commands where a short pause is acceptable - never from 'use' or 'list'.
+update_check() {
+  local v; v="$(latest_version)"
+  [ -n "$v" ] || return 1
+  mkdir -p "$VAULT"
+  printf '%s\n' "$v" > "$UPDATE_CACHE" 2>/dev/null || true
+  printf '%s' "$v"
+}
+
+# Offline: print a one-line notice if the cache says a newer version exists.
+update_notice() {
+  [ -z "${CCSWITCH_NO_UPDATE_NOTICE:-}" ] || return 0
+  [ -f "$UPDATE_CACHE" ] || return 0
+  local v; v="$(cat "$UPDATE_CACHE" 2>/dev/null)"
+  [ -n "$v" ] || return 0
+  if version_gt "$v" "$VERSION"; then
+    info "${DIM}ccswitch $v is available (you have $VERSION) - run: ccswitch update${RST}"
+  fi
+}
+
+cmd_update() {
+  local check_only="" method
+  [ "${1:-}" != "--check" ] || check_only=1
+  method="$(install_method)"
+
+  info "current: ${B}$VERSION${RST}"
+  local latest; latest="$(update_check)" ||
+    die "could not reach GitHub to check for updates"
+  info "latest:  ${B}$latest${RST}"
+
+  if ! version_gt "$latest" "$VERSION"; then
+    info "${GRN}already up to date${RST}"
+    return 0
+  fi
+  [ -z "$check_only" ] || { info "run 'ccswitch update' to install it"; return 0; }
+
+  case "$method" in
+    npm)  die "this copy was installed with npm - update it with:
+       npm update -g @2hmad/ccswitch" ;;
+    brew) die "this copy was installed with Homebrew - update it with:
+       brew upgrade ccswitch" ;;
+  esac
+
+  local self; self="$(self_path)"
+  [ -w "$(dirname "$self")" ] ||
+    die "$self is not writable - reinstall with your package manager, or:
+       curl -fsSL https://raw.githubusercontent.com/$REPO_SLUG/main/install.sh | bash"
+
+  local tmp; tmp="$(mktemp)"
+  fetch_url "https://raw.githubusercontent.com/$REPO_SLUG/v$latest/bin/ccswitch" > "$tmp" ||
+    { rm -f "$tmp"; die "download failed"; }
+
+  # Refuse anything that is not plausibly the script - a captive-portal HTML
+  # page or a truncated download must never land on top of a working install.
+  if ! head -1 "$tmp" | grep -q '^#!.*bash' ||
+     ! grep -q "^VERSION=\"$latest\"" "$tmp" ||
+     [ "$(wc -c < "$tmp")" -lt 4096 ]; then
+    rm -f "$tmp"
+    die "downloaded file does not look like ccswitch $latest - refusing to install it"
+  fi
+  bash -n "$tmp" 2>/dev/null || { rm -f "$tmp"; die "downloaded file has a syntax error - refusing to install it"; }
+
+  chmod 755 "$tmp"
+  # Rename rather than overwrite: bash reads a script incrementally, so writing
+  # into the running file's inode would corrupt this very process.
+  mv "$tmp" "$self" || { rm -f "$tmp"; die "could not replace $self"; }
+  info "${GRN}updated${RST} $VERSION -> $latest"
+}
+
 cmd_doctor() {
   local ok=0 _none=""
   [ -n "$(active_name)" ] || _none="none"
@@ -659,7 +796,7 @@ _ccswitch() {
   case "$prev" in
     use|rm|rename|login|refresh|save) COMPREPLY=($(compgen -W "$accounts" -- "$cur")); return;;
   esac
-  COMPREPLY=($(compgen -W "use add login list current rm rename save refresh backup restore doctor completion help version" -- "$cur"))
+  COMPREPLY=($(compgen -W "use add login list current rm rename save refresh backup restore doctor update completion help version" -- "$cur"))
 }
 complete -F _ccswitch ccswitch
 EOF
@@ -669,7 +806,7 @@ EOF
 _ccswitch() {
   local -a accounts cmds
   accounts=(${(f)"$(ls -1 ${CCSWITCH_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ccswitch}/accounts 2>/dev/null)"})
-  cmds=(use add login list current rm rename save refresh backup restore doctor completion help version)
+  cmds=(use add login list current rm rename save refresh backup restore doctor update completion help version)
   if (( CURRENT == 2 )); then
     _describe 'command' cmds
     _describe 'account' accounts
@@ -706,6 +843,7 @@ ${B}USAGE${RST}
   ccswitch backup [file]         archive the vault
   ccswitch restore <file>        restore a vault archive
   ccswitch doctor                diagnose the setup
+  ccswitch update [--check]      update ccswitch itself to the latest release
   ccswitch completion <bash|zsh> print a shell completion script
 
 ${B}EXAMPLE${RST}
@@ -721,6 +859,8 @@ ${B}ENVIRONMENT${RST}
   CCSWITCH_REFRESH_WINDOW_DAYS
                    how close to the refresh token's expiry 'refresh' renews it
                    (default 7)
+  CCSWITCH_NO_UPDATE_NOTICE
+                   set to any value to silence the 'update available' line
   NO_COLOR         disable colour
 EOF
 }
@@ -732,7 +872,7 @@ cmd="${1:-}"; shift 2>/dev/null || true
 # that might read or replace it. Skipped for 'restore', which replaces the
 # whole vault, and for 'help'/'version', which touch nothing.
 case "$cmd" in
-  restore|help|-h|--help|version|-V|--version|completion) ;;
+  restore|help|-h|--help|version|-V|--version|completion|update|upgrade) ;;
   *) sync_active ;;
 esac
 case "$cmd" in
@@ -749,6 +889,7 @@ case "$cmd" in
   restore)            cmd_restore "${1:-}" ;;
   doctor)             cmd_doctor ;;
   completion)         cmd_completion "${1:-}" ;;
+  update|upgrade)     cmd_update "${1:-}" ;;
   version|-V|--version) info "ccswitch $VERSION" ;;
   help|-h|--help)     usage ;;
   "")                 cmd_list ;;

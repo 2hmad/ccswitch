@@ -34,18 +34,39 @@ That last row is the trade-off. If you need two accounts running _simultaneously
 
 ## Install
 
+With npm, if you already have Node around:
+
+```bash
+npm install -g @2hmad/ccswitch
+```
+
+Or with no Node at all:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/2hmad/ccswitch/main/install.sh | bash
 ```
 
-Or manually:
+Or from a checkout:
 
 ```bash
 git clone https://github.com/2hmad/ccswitch
 cd ccswitch && ./install.sh
 ```
 
-Requires `bash`, `python3`, and Claude Code. Linux is supported; macOS is experimental — see [Platform support](#platform-support).
+The npm package is scoped because the unscoped `ccswitch` name belongs to an unrelated project. The installed command is still `ccswitch`.
+
+Requires `bash`, `python3`, and Claude Code. Node is only a delivery mechanism — nothing at runtime uses it. Linux is supported; macOS is experimental — see [Platform support](#platform-support).
+
+## Update
+
+```bash
+ccswitch update            # fetch and install the latest release
+ccswitch update --check    # just report what is available
+```
+
+It knows how it was installed and won't fight your package manager — an npm copy is told to run `npm update -g @2hmad/ccswitch` rather than overwriting itself. Before replacing anything it checks the download is really ccswitch, of the expected version, and parses as valid bash, then swaps it in by rename so the running script is never written through.
+
+`ccswitch list` mentions a newer version when one exists. That line is printed from a cache written by the scheduled `refresh` run, so `list` itself never touches the network. Silence it with `CCSWITCH_NO_UPDATE_NOTICE=1`.
 
 ## Usage
 
@@ -96,6 +117,7 @@ claude                    # runs as personal
 | `ccswitch backup [file]`         | Archive the vault                             |
 | `ccswitch restore <file>`        | Restore a vault archive                       |
 | `ccswitch doctor`                | Diagnose the setup                            |
+| `ccswitch update [--check]`      | Update ccswitch itself                        |
 | `ccswitch completion bash\|zsh`  | Print a completion script                     |
 
 ### Keeping parked accounts alive

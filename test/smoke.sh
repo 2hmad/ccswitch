@@ -198,6 +198,17 @@ check "targeted save stores into the named slot" \
   "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
   "TOK-B9"
 
+# Version comparison must be numeric, not lexical: "0.10.0" is newer than
+# "0.9.0" but sorts before it as a string.
+# shellcheck source=/dev/null
+source <(sed -n '/^version_gt()/,/^}/p' "$ROOT/bin/ccswitch")
+vg() { if version_gt "$1" "$2"; then echo yes; else echo no; fi; }
+check "version_gt 0.10.0 > 0.9.0"  "$(vg 0.10.0 0.9.0)"  "yes"
+check "version_gt 0.9.0 !> 0.10.0" "$(vg 0.9.0 0.10.0)"  "no"
+check "version_gt equal is false"  "$(vg 0.5.0 0.5.0)"   "no"
+check "version_gt 1.0.0 > 0.99.9"  "$(vg 1.0.0 0.99.9)"  "yes"
+check "version_gt handles shorts"  "$(vg 0.5.1 0.5)"     "yes"
+
 # error paths must exit non-zero
 must_fail() {  # $1=label, rest=command
   local label="$1"; shift

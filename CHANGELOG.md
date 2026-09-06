@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-06
+
+### Added
+
+- `ccswitch update` updates ccswitch in place from the latest GitHub release,
+  and `ccswitch update --check` only reports. It detects how the copy was
+  installed and defers to npm or Homebrew rather than overwriting a
+  package-managed file. The download must start with a bash shebang, declare
+  the expected version, exceed 4KB and pass `bash -n` before it is installed,
+  and it is swapped in by rename - overwriting in place would corrupt the
+  running script, which bash reads incrementally.
+
+- `ccswitch list` notes when a newer version is available. The check itself
+  runs during the scheduled `refresh`, so `list` reads a cache and never makes
+  a network call. `CCSWITCH_NO_UPDATE_NOTICE=1` silences it.
+
+- An npm package, `@2hmad/ccswitch`, so installing and updating no longer means
+  piping curl to bash. Scoped because the unscoped `ccswitch` name is taken by
+  an unrelated project; the installed command is still `ccswitch`. Marked
+  `os: [darwin, linux]`, and Node is only a delivery mechanism - nothing at
+  runtime uses it.
+
+  CI publishes on tag when an `NPM_TOKEN` secret exists, and skips with a
+  warning when it does not. A lint step keeps `package.json` and the `VERSION`
+  in `bin/ccswitch` from drifting apart.
+
 ## [0.4.2] - 2026-09-06
 
 ### Fixed
