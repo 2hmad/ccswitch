@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Accounts demanding a fresh browser `/login` roughly daily. Refresh tokens
+  rotate - each renewal consumes the old one - so any snapshot taken before a
+  rotation is worthless afterwards. Restoring one made the server answer
+  `invalid_grant`, at which point Claude Code marks the token dead and blanks
+  the credential on disk. Four changes:
+
+  - `capture_into` refuses to snapshot a cleared credential. Storing one
+    overwrote a good slot with empty tokens, turning a single re-login into a
+    permanently broken account that `ccswitch list` reported only as `unknown`.
+  - Every ccswitch run now syncs the live credential into the active account's
+    slot, not just `use`. Claude Code rotates mid-session and on `/login`,
+    neither of which went through ccswitch, so the vault kept a consumed token.
+    Guarded by an identity check so a `/login` as a different account cannot
+    write into the wrong slot.
+  - `refresh` decides from `refreshTokenExpiresAt` rather than the 8h access
+    token, and only acts within `CCSWITCH_REFRESH_WINDOW_DAYS` (default 7) of
+    expiry - each renewal is itself a rotation, so refreshing early was risk
+    without benefit. It now captures the result even when `claude` exits
+    non-zero, since a rotation can land before an unrelated failure, and reports
+    a signed-out account instead of trying to renew it.
+  - `refresh` finally has the `INT`/`TERM`/`EXIT` trap the 0.2.0 notes claimed:
+    it was never implemented, so an interrupted run left you signed in as
+    whichever account the loop was holding.
+
+- `ccswitch list` gained a `RELOGIN` column (real refresh-token life) and
+  reports a cleared slot as `BROKEN - re-login` instead of `unknown`.
+
+### Changed
+
+- The scheduling docs lead with the systemd user timer and demote cron. A
+  4am cron job never fires on a machine that is powered off overnight, and
+  cron neither runs it late nor says anything - the run is simply lost.
+
 ## [0.3.0] - 2026-09-04
 
 ### Added

@@ -41,7 +41,8 @@ d["userID"] = uid
 d["oauthAccount"] = {"emailAddress": email}
 json.dump(d, open(p, "w"), indent=2)
 cred = json.dumps({"claudeAiOauth": {"accessToken": tok, "refreshToken": "r-" + tok,
-                                     "expiresAt": int((time.time() + 9 * 3600) * 1000)}})
+                                     "expiresAt": int((time.time() + 9 * 3600) * 1000),
+                                     "refreshTokenExpiresAt": int((time.time() + 28 * 86400) * 1000)}})
 os.system('security add-generic-password -U -a "$USER" -s "Claude Code-credentials" -X '
           + cred.encode().hex())
 PY

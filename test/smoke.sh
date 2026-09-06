@@ -27,7 +27,8 @@ import json, os, sys, time
 uid, email, token, hours = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
 h = os.environ["HOME"]
 json.dump({"claudeAiOauth": {"accessToken": token, "refreshToken": "r-" + token,
-                             "expiresAt": int((time.time() + hours * 3600) * 1000)}},
+                             "expiresAt": int((time.time() + hours * 3600) * 1000),
+                             "refreshTokenExpiresAt": int((time.time() + 28 * 86400) * 1000)}},
           open(h + "/.claude/.credentials.json", "w"))
 p = h + "/.claude.json"
 d = json.load(open(p)) if os.path.exists(p) else {}
@@ -77,6 +78,52 @@ json.dump({'claudeAiOauth':{'accessToken':'TOK-A2','refreshToken':'r2','expiresA
 ccswitch beta --force >/dev/null; ccswitch alpha --force >/dev/null
 check "refresh persisted"    "$(j /.claude/.credentials.json "['claudeAiOauth']['accessToken']")" "TOK-A2"
 
+# Fix for the daily-relogin bug: Claude Code rotates the refresh token during a
+# session and on /login, neither of which goes through ccswitch. Any ccswitch
+# run must pull that into the active slot, or the vault keeps a consumed token.
+python3 -c "
+import json,os,time
+h=os.environ['HOME']
+json.dump({'claudeAiOauth':{'accessToken':'TOK-ROTATED','refreshToken':'r-rotated',
+                            'expiresAt':int((time.time()+8*3600)*1000),
+                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+          open(h+'/.claude/.credentials.json','w'))"
+ccswitch list >/dev/null   # any command, not a switch
+check "rotation synced into the active slot" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/alpha/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-ROTATED"
+
+# but a live credential belonging to a different account must NOT be synced
+# into the active slot - that would corrupt it
+python3 -c "
+import json,os,time
+h=os.environ['HOME']
+d=json.load(open(h+'/.claude.json')); d['userID']='UID-OTHER'
+d['oauthAccount']={'emailAddress':'other@example.com'}
+json.dump(d,open(h+'/.claude.json','w'),indent=2)
+json.dump({'claudeAiOauth':{'accessToken':'TOK-WRONG','refreshToken':'r-wrong',
+                            'expiresAt':int((time.time()+8*3600)*1000),
+                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+          open(h+'/.claude/.credentials.json','w'))"
+ccswitch list >/dev/null
+check "mismatched identity is not synced" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/alpha/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-ROTATED"
+
+# put alpha's real identity back (ccswitch <name> short-circuits when already
+# active, so it would not undo the identity we just faked)
+python3 -c "
+import json,os
+h=os.environ['HOME']
+d=json.load(open(h+'/.claude.json')); d['userID']='UID-A'
+d['oauthAccount']={'emailAddress':'a@example.com'}
+json.dump(d,open(h+'/.claude.json','w'),indent=2)
+import time
+json.dump({'claudeAiOauth':{'accessToken':'TOK-ROTATED','refreshToken':'r-rotated',
+                            'expiresAt':int((time.time()+8*3600)*1000),
+                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+          open(h+'/.claude/.credentials.json','w'))"
+
 ccswitch rename alpha gamma >/dev/null
 check "rename"               "$(ccswitch current)"                       "gamma"
 
@@ -91,6 +138,31 @@ check "restore"              "$(ccswitch list | grep -c example.com)"    "2"
 ccswitch refresh --all >/dev/null
 check "refresh: skips valid tokens, leaves current" "$(ccswitch current)" "gamma"
 check "refresh: accounts untouched"          "$(ccswitch list | grep -c example.com)" "2"
+
+# A cleared credential - what Claude Code writes when the server rejects a
+# refresh with invalid_grant - must never overwrite a good stored slot.
+python3 -c "
+import json,os
+h=os.environ['HOME']
+json.dump({'claudeAiOauth':{'accessToken':'','refreshToken':'','expiresAt':0,
+                            'refreshTokenExpiresAt':0}},
+          open(h+'/.claude/.credentials.json','w'))"
+if ccswitch save >/dev/null 2>&1; then bad "save refuses a cleared credential"; else ok "save refuses a cleared credential"; fi
+check "cleared credential did not clobber the slot" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/gamma/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-ROTATED"
+check "list flags the live account as usable" "$(ccswitch list | grep -c BROKEN)" "0"
+
+# a slot that is genuinely cleared must be reported, not shown as 'unknown'
+python3 -c "
+import json,os
+p=os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'
+json.dump({'claudeAiOauth':{'accessToken':'','refreshToken':'','expiresAt':0}},open(p,'w'))"
+check "list reports a broken slot" "$(ccswitch list | grep -c BROKEN)" "1"
+check "refresh skips a broken slot" "$(ccswitch refresh --all 2>&1 | grep -c 'signed out')" "1"
+
+# restore the good state for the remaining checks
+ccswitch restore "$TMP/v.tgz" >/dev/null
 
 # error paths must exit non-zero
 must_fail() {  # $1=label, rest=command

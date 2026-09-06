@@ -4,10 +4,10 @@ Switch between multiple Claude Code accounts with one command — without re-run
 
 ```console
 $ ccswitch list
-  ACCOUNT      EMAIL                          TOKEN
-* work         you@example.com                valid 8h 12m
-  personal     you@example.net                valid 6h 40m
-  client       you@example.org                expired 3h ago
+  ACCOUNT      EMAIL                          TOKEN                RELOGIN
+* work         you@example.com                valid 8h 12m         24d
+  personal     you@example.net                valid 6h 40m         19d
+  client       you@example.org                BROKEN - re-login    -
 
 $ ccswitch personal
 switched to personal  (you@example.net)  valid 6h 40m
@@ -82,7 +82,7 @@ claude                    # runs as personal
 | `ccswitch list`                  | Accounts, emails, token status                |
 | `ccswitch current`               | Print the active account name                 |
 | `ccswitch save`                  | Write the live token back to the active slot  |
-| `ccswitch refresh [name\|--all]` | Refresh a stored token before it goes stale   |
+| `ccswitch refresh [name\|--all] [--force]` | Renew a token as its refresh token nears expiry |
 | `ccswitch rm <name>`             | Forget an account                             |
 | `ccswitch rename <old> <new>`    | Rename an account                             |
 | `ccswitch backup [file]`         | Archive the vault                             |
@@ -92,6 +92,10 @@ claude                    # runs as personal
 
 ### Keeping parked accounts alive
 
+Claude Code holds two tokens: a short-lived access token (~8h) and a refresh token (~28 days) used to mint new ones. **The refresh token rotates** — every renewal consumes the old one and issues a replacement. Present a consumed token and the server answers `invalid_grant`, at which point Claude Code marks it dead and blanks the credential on disk, so the next thing you type asks you to sign in again.
+
+That matters for a tool that snapshots and restores credentials. ccswitch keeps the vault in step by syncing the live credential into the active account's slot on **every** run, not only when you switch — a token Claude Code rotated mid-session, or a `/login` you typed inside Claude Code, would otherwise never reach the vault, and restoring that stale snapshot later would hand the server a consumed token. `ccswitch list` reports a slot whose tokens have been cleared as `BROKEN - re-login`, and its `RELOGIN` column counts down the refresh token's real remaining life.
+
 An account you haven't switched to in a few weeks can lose its refresh token, which forces a full `ccswitch login <name>` with a browser round-trip. `ccswitch refresh --all` prevents that: it restores each stored account in turn, makes one tiny API call to exercise its token, saves the renewed credential back, and returns you to the account you started on.
 
 Run it by hand whenever it occurs to you:
@@ -100,32 +104,17 @@ Run it by hand whenever it occurs to you:
 ccswitch refresh --all
 ```
 
-Or schedule it daily. Accounts whose access token is still valid are skipped without any API call, so a typical run does nothing at all:
+Or schedule it daily. Because each renewal rotates the token, `refresh` does nothing until an account is within `CCSWITCH_REFRESH_WINDOW_DAYS` (default 7) of its refresh token expiring — so a typical run makes no API calls at all:
 
 ```console
 $ ccswitch refresh --all
-skip    work  (you@example.com)  valid 6h 2m - not due yet
+skip    work  (you@example.com)  re-login in 24d - not due yet
 refreshed personal  (you@example.net)  valid 8h 0m
 ```
 
-#### cron
+#### systemd user timer (recommended)
 
-`crontab -e`, then:
-
-```cron
-PATH=/home/you/.local/bin:/usr/local/bin:/usr/bin:/bin
-
-30 4 * * * ccswitch refresh --all >> "$HOME/.cache/ccswitch-refresh.log" 2>&1
-```
-
-Two things that trip people up:
-
-- **Set `PATH`.** cron runs with a bare `/usr/bin:/bin`, and `refresh` needs both `ccswitch` and the `claude` binary. Run `command -v claude` and put that directory first — it's usually `~/.local/bin`. Without this the job dies with `the 'claude' command was not found on PATH`.
-- **Pick an hour you're not working.** `refresh` refuses to run while a `claude` process is alive, so a job that fires mid-session just logs an error and does nothing. (A run where every account is skipped doesn't check this, so it stays quiet either way.)
-
-#### systemd user timer
-
-Better on a laptop, because `Persistent=true` catches up on a run that was missed while the machine was asleep — cron simply skips it.
+Prefer this on anything that isn't a server running 24/7. `Persistent=true` catches up a run missed while the machine was off; **cron silently skips it**. A desktop that sleeps overnight will never fire a 4am cron job — the run is lost every night, without a single log line to say so. Pick a time the machine is usually awake anyway.
 
 `~/.config/systemd/user/ccswitch-refresh.service`:
 
@@ -146,8 +135,9 @@ ExecStart=%h/.local/bin/ccswitch refresh --all
 Description=Daily ccswitch token refresh
 
 [Timer]
-OnCalendar=*-*-* 04:30:00
+OnCalendar=*-*-* 15:30:00
 Persistent=true
+RandomizedDelaySec=15m
 
 [Install]
 WantedBy=timers.target
@@ -164,6 +154,21 @@ journalctl --user -u ccswitch-refresh.service         # what happened last time
 ```
 
 If you want it to run while you're logged out, also `sudo loginctl enable-linger $USER`.
+
+#### cron
+
+Only if the machine is genuinely always on. `crontab -e`, then:
+
+```cron
+PATH=/home/you/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+30 4 * * * ccswitch refresh --all >> "$HOME/.cache/ccswitch-refresh.log" 2>&1
+```
+
+Two things that trip people up:
+
+- **Set `PATH`.** cron runs with a bare `/usr/bin:/bin`, and `refresh` needs both `ccswitch` and the `claude` binary. Run `command -v claude` and put that directory first — it's usually `~/.local/bin`. Without this the job dies with `the 'claude' command was not found on PATH`.
+- **Pick an hour the machine is actually on, and you are not working.** `refresh` refuses to run while a `claude` process is alive. A job scheduled for a time you are always shut down never runs at all, and cron will not tell you.
 
 ## How it works
 
@@ -189,7 +194,9 @@ Before switching away, ccswitch saves the live credential back into the account 
 
 **The vault holds live session tokens.** `~/.config/ccswitch` is created mode 700 and files mode 600. `ccswitch backup` produces an archive containing those tokens — encrypt it if you keep it anywhere but your own disk.
 
-**Tokens still expire.** The access token (~8h) refreshes itself automatically whenever the _active_ account is used — Claude Code does this on its own. Accounts sitting parked in the vault aren't touched by anything, though, so their refresh token (~28 days) can eventually lapse, forcing a full `ccswitch login <name>` re-authentication. Run `ccswitch refresh --all` occasionally, or schedule it — see [Keeping parked accounts alive](#keeping-parked-accounts-alive). It only makes a real (tiny, tool-free) API call — and only for accounts whose access token has actually expired, since a still-valid one means the refresh token isn't at risk yet — so it won't burn much of an account's session quota. `ccswitch list` shows how long each account's access token has left.
+**Tokens rotate, and a lost rotation costs you a login.** Renewing consumes the old refresh token, so a snapshot taken before a rotation is worthless afterwards — the server answers `invalid_grant` and Claude Code blanks the credential on disk, which is why an account can suddenly demand `/login` mid-prompt. ccswitch syncs the live credential into the active slot on every run to stay ahead of this. An account it could not keep up with shows as `BROKEN - re-login` in `ccswitch list`, and needs one `ccswitch login <name>`.
+
+**Parked accounts still lapse.** The access token (~8h) refreshes itself whenever the _active_ account is used — Claude Code does that on its own. Accounts sitting in the vault aren't touched by anything, so their refresh token (~28 days) can expire outright. Run `ccswitch refresh --all` occasionally, or schedule it — see [Keeping parked accounts alive](#keeping-parked-accounts-alive). Because each renewal is itself a rotation, it acts only within `CCSWITCH_REFRESH_WINDOW_DAYS` (default 7) of the refresh token's expiry, so most runs make no API call at all. The `RELOGIN` column in `ccswitch list` is the number that matters.
 
 **`CLAUDE_CONFIG_DIR` takes priority.** If it's set, ccswitch operates on that directory instead of `~/.claude`. `ccswitch doctor` will warn you. If you're migrating from per-account config dirs, unset it first.
 

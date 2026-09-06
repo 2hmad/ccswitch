@@ -175,27 +175,62 @@ print((d.get("oauthAccount") or {}).get("emailAddress") or "-")
 PYEOF
 }
 
-acct_expiry() {  # $1=account name -> seconds remaining, or "none"
-  python3 - "$ACCOUNTS/$1/credentials.json" <<'PYEOF'
+# Report a credential file as: "<access secs>|<refresh secs>", where either
+# field may be "none". A cleared credential - Claude Code empties the tokens in
+# place when the server rejects a refresh with invalid_grant - reports "dead".
+cred_state() {  # $1=path to a credentials.json
+  python3 - "$1" <<'PYEOF'
 import json, os, sys, time
 p = sys.argv[1]
 if not os.path.exists(p):
-    print("none"); raise SystemExit
+    print("none|none"); raise SystemExit
 try:
     d = json.load(open(p))
-    oauth = d.get("claudeAiOauth") or {}
-    exp = oauth.get("expiresAt")
-    print(int(exp / 1000 - time.time()) if exp else "none")
+    o = d.get("claudeAiOauth") or {}
+    if not (o.get("accessToken") or "").strip() or not (o.get("refreshToken") or "").strip():
+        print("dead|dead"); raise SystemExit
+    def left(k):
+        v = o.get(k)
+        return str(int(v / 1000 - time.time())) if v else "none"
+    print("%s|%s" % (left("expiresAt"), left("refreshTokenExpiresAt")))
+except SystemExit:
+    raise
 except Exception:
-    print("none")
+    print("none|none")
 PYEOF
 }
 
-fmt_left() {  # $1=seconds
+# True when the live credential holds usable tokens (not cleared by a rejected
+# refresh). Guards every snapshot, so a dead session cannot overwrite a good slot.
+cred_live_ok() {
+  local tmp; tmp="$(mktemp)"
+  cred_read > "$tmp" 2>/dev/null || true
+  local st; st="$(cred_state "$tmp")"
+  rm -f "$tmp"
+  [ "${st%%|*}" != "dead" ] && [ "${st%%|*}" != "none" ]
+}
+
+acct_expiry() {  # $1=account name -> access seconds remaining, "none" or "dead"
+  local st; st="$(cred_state "$ACCOUNTS/$1/credentials.json")"
+  printf '%s' "${st%%|*}"
+}
+
+acct_refresh_expiry() {  # $1=account name -> refresh-token seconds, "none"/"dead"
+  local st; st="$(cred_state "$ACCOUNTS/$1/credentials.json")"
+  printf '%s' "${st##*|}"
+}
+
+fmt_left() {  # $1=seconds, "none" or "dead"
   local s="$1"
+  if [ "$s" = "dead" ]; then printf 'BROKEN - re-login'; return; fi
   if [ "$s" = "none" ]; then printf 'unknown'; return; fi
   if [ "$s" -le 0 ]; then printf 'expired %dh ago' $(( -s / 3600 )); return; fi
   printf 'valid %dh %dm' $(( s / 3600 )) $(( (s % 3600) / 60 ))
+}
+
+fmt_days() {  # $1=seconds, "none" or "dead"
+  local s="$1"
+  case "$s" in dead) printf '-';; none) printf '?';; *) printf '%dd' $(( s / 86400 ));; esac
 }
 
 # --- state ------------------------------------------------------------------
@@ -220,10 +255,23 @@ claude_running() {
 capture_into() {  # $1=account name
   local n="$1" d="$ACCOUNTS/$1"
   cred_exists || die "no live credential found - run 'claude' and /login first"
+
+  local tmp; tmp="$(mktemp)"
+  cred_read > "$tmp" 2>/dev/null || true
+  [ -s "$tmp" ] || { rm -f "$tmp"; die "the live credential came back empty - refusing to store it as '$n'"; }
+
+  # Claude Code blanks the tokens in place when the server rejects a refresh
+  # with invalid_grant. Snapshotting that would destroy a good stored slot and
+  # turn one re-login into a permanently broken account.
+  local st; st="$(cred_state "$tmp")"
+  if [ "${st%%|*}" = "dead" ]; then
+    rm -f "$tmp"
+    die "the live credential has been cleared (signed out) - refusing to overwrite '$n'.
+       Sign in again, then run 'ccswitch save'."
+  fi
+
   mkdir -p "$d"
-  cred_read > "$d/credentials.json" || true
-  [ -s "$d/credentials.json" ] ||
-    { rm -f "$d/credentials.json"; die "the live credential came back empty - refusing to store it as '$n'"; }
+  mv "$tmp" "$d/credentials.json"
   identity_extract "$CC_JSON" > "$d/identity.json"
   chmod 700 "$d"; chmod 600 "$d"/*.json
 }
@@ -244,6 +292,56 @@ save_active() {
   [ -n "$cur" ] || return 0
   cred_exists || return 0
   capture_into "$cur"
+}
+
+# True when the live .claude.json identity is the one stored for $1.
+identity_matches() {  # $1=account name
+  python3 - "$CC_JSON" "$ACCOUNTS/$1/identity.json" <<'PYEOF'
+import json, os, sys
+def ident(p):
+    if not os.path.exists(p):
+        return None
+    try:
+        d = json.load(open(p))
+    except Exception:
+        return None
+    return (d.get("userID"), ((d.get("oauthAccount") or {}).get("emailAddress")))
+live, stored = ident(sys.argv[1]), ident(sys.argv[2])
+# Unknown on either side is not a mismatch we can act on - stay conservative
+# and only block when both are known and actually differ.
+raise SystemExit(1 if (live and stored and any(live) and any(stored) and live != stored) else 0)
+PYEOF
+}
+
+# Refresh tokens rotate: each use consumes the old one. If the live credential
+# has moved on and the vault still holds the superseded token, restoring that
+# snapshot later gets invalid_grant and forces a browser re-login. Claude Code
+# rotates during a session and on /login, neither of which goes through
+# ccswitch - so sync opportunistically on every run rather than only on switch.
+sync_active() {
+  local cur; cur="$(active_name)"
+  [ -n "$cur" ] || return 0
+  acct_exists "$cur" || return 0
+  cred_exists || return 0
+  cred_live_ok || return 0
+
+  # Only sync when the live identity really is the active account. A /login as
+  # a different account leaves ccswitch's idea of "active" stale, and syncing
+  # then would write the wrong credential into this slot.
+  identity_matches "$cur" || return 0
+
+  local stored="$ACCOUNTS/$cur/credentials.json"
+  local tmp; tmp="$(mktemp)"
+  cred_read > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  if [ -s "$tmp" ] && ! cmp -s "$tmp" "$stored"; then
+    mkdir -p "$ACCOUNTS/$cur"
+    mv "$tmp" "$stored"
+    chmod 600 "$stored"
+    identity_extract "$CC_JSON" > "$ACCOUNTS/$cur/identity.json"
+    chmod 600 "$ACCOUNTS/$cur/identity.json"
+  else
+    rm -f "$tmp"
+  fi
 }
 
 # --- commands ---------------------------------------------------------------
@@ -283,13 +381,15 @@ cmd_use() {
 cmd_list() {
   local cur; cur="$(active_name)"
   local found=0
-  printf '%s  %-12s %-30s %-20s%s\n' "$B" "ACCOUNT" "EMAIL" "TOKEN" "$RST"
+  printf '%s  %-12s %-30s %-20s %-8s%s\n' "$B" "ACCOUNT" "EMAIL" "TOKEN" "RELOGIN" "$RST"
   for d in "$ACCOUNTS"/*/; do
     [ -d "$d" ] || continue
     found=1
     local n; n="$(basename "$d")"
     local mark="  "; [ "$n" = "$cur" ] && mark="${GRN}* ${RST}"
-    printf '%s%-12s %-30s %-20s\n' "$mark" "$n" "$(acct_email "$n")" "$(fmt_left "$(acct_expiry "$n")")"
+    local st; st="$(cred_state "$d/credentials.json")"
+    printf '%s%-12s %-30s %-20s %-8s\n' "$mark" "$n" "$(acct_email "$n")" \
+      "$(fmt_left "${st%%|*}")" "$(fmt_days "${st##*|}")"
   done
   [ "$found" = 1 ] || info "${DIM}no accounts yet - run: ccswitch login <name>${RST}"
 }
@@ -359,6 +459,9 @@ cmd_save() {
   info "saved live credential into $cur"
 }
 
+# How close to the refresh token's expiry we start renewing it, in days.
+REFRESH_WINDOW_DAYS="${CCSWITCH_REFRESH_WINDOW_DAYS:-7}"
+
 cmd_refresh() {
   local target="${1:-}" force="${2:-}" n names
   names=()
@@ -373,16 +476,25 @@ cmd_refresh() {
   fi
   [ "${#names[@]}" -gt 0 ] || die "no stored accounts to refresh"
 
-  # A still-valid access token means the refresh token was exercised recently
-  # enough that it isn't at risk - skip it so we don't burn the account's
-  # session quota on a call that wouldn't touch the refresh token anyway.
-  # --force overrides this. Decide this up front so a no-op run needs neither
-  # 'claude' on PATH nor a quiet terminal.
-  local todo=()
+  # Every refresh ROTATES the refresh token: the old one is consumed and a new
+  # one issued. A rotation we fail to capture leaves the vault holding a dead
+  # token, so refreshing is not free - do it only as the refresh token nears
+  # its expiry, not merely because the 8h access token lapsed.
+  local todo=() window=$(( REFRESH_WINDOW_DAYS * 86400 ))
   for n in "${names[@]}"; do
-    local left; left="$(acct_expiry "$n")"
-    if [ "$force" != "--force" ] && [ "$left" != "none" ] && [ "$left" -gt 0 ]; then
-      info "${DIM}skip${RST}    $n  ($(acct_email "$n"))  $(fmt_left "$left") - not due yet"
+    local st; st="$(cred_state "$ACCOUNTS/$n/credentials.json")"
+    local racc="${st%%|*}" rref="${st##*|}"
+    if [ "$racc" = "dead" ]; then
+      warn "skip    $n  ($(acct_email "$n"))  signed out - run 'ccswitch login $n'"
+    elif [ "$force" = "--force" ]; then
+      todo+=("$n")
+    elif [ "$rref" != "none" ] && [ "$rref" -gt "$window" ]; then
+      info "${DIM}skip${RST}    $n  ($(acct_email "$n"))  re-login in $(fmt_days "$rref") - not due yet"
+    elif [ "$rref" = "none" ] && [ "$racc" != "none" ] && [ "$racc" -gt 0 ]; then
+      # Older credentials carry no refreshTokenExpiresAt. Fall back to the
+      # access token: a valid one means the refresh token was exercised
+      # recently, so rotating it again now would be risk without benefit.
+      info "${DIM}skip${RST}    $n  ($(acct_email "$n"))  $(fmt_left "$racc") - not due yet"
     else
       todo+=("$n")
     fi
@@ -399,31 +511,52 @@ cmd_refresh() {
   cred_exists && cred_read > "$stash/credentials.json"
   identity_extract "$CC_JSON" > "$stash/identity.json"
 
-  for n in "${todo[@]}"; do
-    restore_from "$n"
-    # A minimal non-interactive call forces Claude Code to check the access
-    # token and use the refresh token, since it's expired or unknown, without
-    # spending the user's own interactive session on it. --allowedTools ""
-    # keeps it from touching anything; -p skips the workspace trust dialog.
-    if (cd "$HOME" && claude -p "ok" --model haiku --allowedTools "" >/dev/null 2>&1); then
-      capture_into "$n"
-      info "${GRN}refreshed${RST} $n  ($(acct_email "$n"))  $(fmt_left "$(acct_expiry "$n")")"
+  # Put the starting account back however we leave - including on Ctrl-C, which
+  # would otherwise strand the user signed in as whichever account the loop held.
+  # shellcheck disable=SC2317
+  _refresh_restore() {
+    if [ -n "$started" ] && acct_exists "$started"; then
+      restore_from "$started"
+    elif [ -f "$stash/credentials.json" ]; then
+      cred_write "$stash/credentials.json"
+      identity_apply "$CC_JSON" "$stash/identity.json"
+      rm -f "$ACTIVE_FILE"
     else
-      warn "could not refresh $n - its refresh token may be expired, run 'ccswitch login $n'"
+      cred_clear
+      rm -f "$ACTIVE_FILE"
+    fi
+    rm -rf "$stash"
+  }
+  trap '_refresh_restore; trap - INT TERM EXIT; exit 130' INT TERM
+  trap '_refresh_restore' EXIT
+
+  for n in "${todo[@]}"; do
+    local before; before="$(acct_expiry "$n")"
+    restore_from "$n"
+
+    # A minimal non-interactive call makes Claude Code exercise the refresh
+    # token. --allowedTools "" keeps it from touching anything; -p skips the
+    # workspace trust dialog.
+    local rc=0
+    (cd "$HOME" && claude -p "ok" --model haiku --allowedTools "" >/dev/null 2>&1) || rc=$?
+
+    # Capture regardless of exit status. Claude Code may have rotated the token
+    # before failing for an unrelated reason, and the replacement exists only in
+    # the live credential - losing it would strand the account for good.
+    if cred_live_ok; then
+      capture_into "$n" 2>/dev/null || warn "could not save the refreshed credential for $n"
+      local after; after="$(acct_expiry "$n")"
+      if [ "$after" != "none" ] && [ "$after" != "dead" ] &&
+         { [ "$before" = "none" ] || [ "$before" = "dead" ] || [ "$after" -gt "$before" ]; }; then
+        info "${GRN}refreshed${RST} $n  ($(acct_email "$n"))  $(fmt_left "$after")"
+      else
+        warn "$n ran but its expiry did not advance - token may not have been renewed"
+      fi
+    else
+      warn "could not refresh $n (exit $rc) - the server rejected its refresh token.
+       Run 'ccswitch login $n' to sign in again."
     fi
   done
-
-  if [ -n "$started" ] && acct_exists "$started"; then
-    restore_from "$started"
-  elif [ -f "$stash/credentials.json" ]; then
-    cred_write "$stash/credentials.json"
-    identity_apply "$CC_JSON" "$stash/identity.json"
-    rm -f "$ACTIVE_FILE"
-  else
-    cred_clear
-    rm -f "$ACTIVE_FILE"
-  fi
-  rm -rf "$stash"
 }
 
 cmd_backup() {
@@ -533,12 +666,23 @@ ${B}ENVIRONMENT${RST}
   CCSWITCH_HOME    vault location (default \$XDG_CONFIG_HOME/ccswitch)
   CCSWITCH_BACKEND credential store: 'file' or 'keychain' (default: keychain
                    on macOS when no credentials file exists, else file)
+  CCSWITCH_REFRESH_WINDOW_DAYS
+                   how close to the refresh token's expiry 'refresh' renews it
+                   (default 7)
   NO_COLOR         disable colour
 EOF
 }
 
 # --- dispatch ---------------------------------------------------------------
 cmd="${1:-}"; shift 2>/dev/null || true
+
+# Keep the active slot in step with the live credential before doing anything
+# that might read or replace it. Skipped for 'restore', which replaces the
+# whole vault, and for 'help'/'version', which touch nothing.
+case "$cmd" in
+  restore|help|-h|--help|version|-V|--version|completion) ;;
+  *) sync_active ;;
+esac
 case "$cmd" in
   use)                cmd_use "${1:-}" "${2:-}" ;;
   add)                cmd_add "${1:-}" ;;
