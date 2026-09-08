@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.5.1"
+VERSION="0.6.0"
 
 # --- locations --------------------------------------------------------------
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -228,6 +228,13 @@ fmt_left() {  # $1=seconds, "none" or "dead"
   printf 'valid %dh %dm' $(( s / 3600 )) $(( (s % 3600) / 60 ))
 }
 
+fmt_status() {  # $1=access seconds, "none" or "dead"
+  case "$1" in
+    dead) printf '%sBROKEN - re-login%s' "$RED" "$RST" ;;
+    *)    printf 'ready' ;;
+  esac
+}
+
 fmt_days() {  # $1=seconds, "none" or "dead"
   local s="$1"
   case "$s" in dead) printf '-';; none) printf '?';; *) printf '%dd' $(( s / 86400 ));; esac
@@ -352,16 +359,17 @@ PYEOF
 # rotates during a session and on /login, neither of which goes through
 # ccswitch - so sync opportunistically on every run rather than only on switch.
 sync_active() {
-  local cur; cur="$(active_name)"
-  [ -n "$cur" ] || return 0
-  acct_exists "$cur" || return 0
   cred_exists || return 0
   cred_live_ok || return 0
 
-  # Only sync when the live identity really is the active account. A /login as
-  # a different account leaves ccswitch's idea of "active" stale, and syncing
-  # then would write the wrong credential into this slot.
-  identity_matches "$cur" || return 0
+  # Sync into whichever stored account the live credential actually belongs to,
+  # matched by email - not blindly into whatever is marked active. Signing in
+  # with /login inside Claude Code changes the live account without telling
+  # ccswitch, and the rotation that follows belongs to that account, not to the
+  # stale one. No match means we have no idea whose this is, so do nothing.
+  local cur; cur="$(account_for_live_identity || true)"
+  [ -n "$cur" ] || return 0
+  acct_exists "$cur" || return 0
 
   local stored="$ACCOUNTS/$cur/credentials.json"
   local tmp; tmp="$(mktemp)"
@@ -372,6 +380,9 @@ sync_active() {
     chmod 600 "$stored"
     identity_extract "$CC_JSON" > "$ACCOUNTS/$cur/identity.json"
     chmod 600 "$ACCOUNTS/$cur/identity.json"
+    # The live credential is this account's, so this account is what is signed
+    # in - follow it rather than leaving 'active' pointing somewhere stale.
+    printf '%s\n' "$cur" > "$ACTIVE_FILE"
   else
     rm -f "$tmp"
   fi
@@ -414,7 +425,7 @@ cmd_use() {
 cmd_list() {
   local cur; cur="$(active_name)"
   local found=0
-  printf '%s  %-12s %-30s %-20s %-8s%s\n' "$B" "ACCOUNT" "EMAIL" "TOKEN" "RELOGIN" "$RST"
+  printf '%s  %-12s %-30s %-20s %-8s%s\n' "$B" "ACCOUNT" "EMAIL" "STATUS" "RELOGIN" "$RST"
   for d in "$ACCOUNTS"/*/; do
     [ -d "$d" ] || continue
     found=1
@@ -422,7 +433,7 @@ cmd_list() {
     local mark="  "; [ "$n" = "$cur" ] && mark="${GRN}* ${RST}"
     local st; st="$(cred_state "$d/credentials.json")"
     printf '%s%-12s %-30s %-20s %-8s\n' "$mark" "$n" "$(acct_email "$n")" \
-      "$(fmt_left "${st%%|*}")" "$(fmt_days "${st##*|}")"
+      "$(fmt_status "${st%%|*}")" "$(fmt_days "${st##*|}")"
   done
   [ "$found" = 1 ] || info "${DIM}no accounts yet - run: ccswitch login <name>${RST}"
   update_notice
@@ -627,6 +638,88 @@ cmd_refresh() {
   done
 }
 
+cmd_sync() {
+  local before after
+  before="$(active_name)"
+  sync_active
+  after="$(active_name)"
+  if [ -n "$after" ]; then
+    if [ "$before" != "$after" ]; then
+      info "${GRN}synced${RST} live credential into ${B}$after${RST} (was on $before)"
+    else
+      info "${GRN}synced${RST} live credential into ${B}$after${RST}"
+    fi
+  else
+    info "nothing to sync"
+  fi
+}
+
+# Continuous capture. A rotation only reaches the vault when something runs
+# ccswitch, so a session that rotates and is then restored from an older
+# snapshot hands the server a consumed token. Watching the credential file
+# closes that window: every rotation is captured as it is written.
+AUTOSYNC_NAME="ccswitch-autosync"
+
+cmd_autosync() {
+  local action="${1:-status}"
+  if [ "$BACKEND" = "keychain" ]; then
+    die "autosync watches the credential file, and this machine stores the
+       credential in the macOS keychain, which cannot be watched that way.
+       Run 'ccswitch sync' after signing in, or switch with ccswitch."
+  fi
+
+  local ud="$HOME/.config/systemd/user"
+  local self; self="$(self_path)"
+  case "$(uname -s)" in
+    Linux) ;;
+    *) die "autosync currently supports systemd only (this is $(uname -s))" ;;
+  esac
+  command -v systemctl >/dev/null 2>&1 || die "systemctl was not found"
+
+  case "$action" in
+    install)
+      mkdir -p "$ud"
+      cat > "$ud/$AUTOSYNC_NAME.service" <<EOF
+[Unit]
+Description=Capture a rotated Claude Code credential into the ccswitch vault
+
+[Service]
+Type=oneshot
+ExecStart=$self sync
+EOF
+      cat > "$ud/$AUTOSYNC_NAME.path" <<EOF
+[Unit]
+Description=Watch the Claude Code credential for token rotations
+
+[Path]
+PathModified=$CRED
+Unit=$AUTOSYNC_NAME.service
+
+[Install]
+WantedBy=default.target
+EOF
+      systemctl --user daemon-reload
+      systemctl --user enable --now "$AUTOSYNC_NAME.path" >/dev/null
+      info "${GRN}autosync installed${RST} - watching $CRED"
+      info "${DIM}every token rotation is now captured as it is written${RST}"
+      ;;
+    uninstall)
+      systemctl --user disable --now "$AUTOSYNC_NAME.path" >/dev/null 2>&1 || true
+      rm -f "$ud/$AUTOSYNC_NAME.path" "$ud/$AUTOSYNC_NAME.service"
+      systemctl --user daemon-reload
+      info "autosync removed"
+      ;;
+    status)
+      if systemctl --user is-active "$AUTOSYNC_NAME.path" >/dev/null 2>&1; then
+        info "${GRN}autosync is active${RST} - watching $CRED"
+      else
+        info "autosync is ${YLW}not installed${RST} - enable it with: ccswitch autosync install"
+      fi
+      ;;
+    *) die "usage: ccswitch autosync [install|uninstall|status]" ;;
+  esac
+}
+
 cmd_backup() {
   local out="${1:-$HOME/ccswitch-backup-$(date +%F-%H%M).tar.gz}"
   tar czf "$out" -C "$(dirname "$VAULT")" "$(basename "$VAULT")"
@@ -788,6 +881,12 @@ cmd_doctor() {
   printf '  vault            : %s\n' "$VAULT"
   printf '  active account   : %s\n' "$(active_name)${_none}"
   printf '  accounts stored  : %s\n' "$(find "$ACCOUNTS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+  local _d _n _st
+  for _d in "$ACCOUNTS"/*/; do
+    [ -d "$_d" ] || continue
+    _n="$(basename "$_d")"; _st="$(cred_state "$_d/credentials.json")"
+    printf '    %-12s access %-18s re-login in %s\n' "$_n" "$(fmt_left "${_st%%|*}")" "$(fmt_days "${_st##*|}")"
+  done
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     printf '\n  %sCLAUDE_CONFIG_DIR is set%s (%s)\n' "$YLW" "$RST" "$CLAUDE_CONFIG_DIR"
     printf '  ccswitch is operating on that directory rather than ~/.claude.\n'
@@ -808,7 +907,7 @@ _ccswitch() {
   case "$prev" in
     use|rm|rename|login|refresh|save) COMPREPLY=($(compgen -W "$accounts" -- "$cur")); return;;
   esac
-  COMPREPLY=($(compgen -W "use add login list current rm rename save refresh backup restore doctor update completion help version" -- "$cur"))
+  COMPREPLY=($(compgen -W "use add login list current rm rename save sync autosync refresh backup restore doctor update completion help version" -- "$cur"))
 }
 complete -F _ccswitch ccswitch
 EOF
@@ -818,7 +917,7 @@ EOF
 _ccswitch() {
   local -a accounts cmds
   accounts=(${(f)"$(ls -1 ${CCSWITCH_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ccswitch}/accounts 2>/dev/null)"})
-  cmds=(use add login list current rm rename save refresh backup restore doctor update completion help version)
+  cmds=(use add login list current rm rename save sync autosync refresh backup restore doctor update completion help version)
   if (( CURRENT == 2 )); then
     _describe 'command' cmds
     _describe 'account' accounts
@@ -848,6 +947,8 @@ ${B}USAGE${RST}
   ccswitch list                  list accounts, emails and token status
   ccswitch current               print the active account name
   ccswitch save [name]           write the live token back to its account
+  ccswitch sync                  capture the live token into the account it belongs to
+  ccswitch autosync install      capture every token rotation automatically
   ccswitch refresh [name|--all] [--force]
                                   refresh a stored token before it goes stale
   ccswitch rm <name>             forget an account
@@ -894,6 +995,8 @@ case "$cmd" in
   list|ls)            cmd_list ;;
   current)            cmd_current ;;
   save)               cmd_save "${1:-}" ;;
+  sync)               cmd_sync ;;
+  autosync)           cmd_autosync "${1:-}" ;;
   refresh)            cmd_refresh "${1:-}" "${2:-}" ;;
   rm|remove|delete)   cmd_rm "${1:-}" ;;
   rename|mv)          cmd_rename "${1:-}" "${2:-}" ;;

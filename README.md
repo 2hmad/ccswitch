@@ -4,9 +4,9 @@ Switch between multiple Claude Code accounts with one command — without re-run
 
 ```console
 $ ccswitch list
-  ACCOUNT      EMAIL                          TOKEN                RELOGIN
-* work         you@example.com                valid 8h 12m         24d
-  personal     you@example.net                valid 6h 40m         19d
+  ACCOUNT      EMAIL                          STATUS               RELOGIN
+* work         you@example.com                ready                24d
+  personal     you@example.net                ready                19d
   client       you@example.org                BROKEN - re-login    -
 
 $ ccswitch personal
@@ -111,6 +111,8 @@ claude                    # runs as personal
 | `ccswitch list`                  | Accounts, emails, token status                |
 | `ccswitch current`               | Print the active account name                 |
 | `ccswitch save [name]`           | Write the live token back to its account      |
+| `ccswitch sync`                  | Capture the live token into the account it belongs to |
+| `ccswitch autosync install`      | Capture every rotation automatically          |
 | `ccswitch refresh [name\|--all] [--force]` | Renew a token as its refresh token nears expiry |
 | `ccswitch rm <name>`             | Forget an account                             |
 | `ccswitch rename <old> <new>`    | Rename an account                             |
@@ -122,7 +124,13 @@ claude                    # runs as personal
 
 ### Keeping parked accounts alive
 
-Claude Code holds two tokens: a short-lived access token (~8h) and a refresh token (~28 days) used to mint new ones. **The refresh token rotates** — every renewal consumes the old one and issues a replacement. Present a consumed token and the server answers `invalid_grant`, at which point Claude Code marks it dead and blanks the credential on disk, so the next thing you type asks you to sign in again.
+Claude Code holds two tokens: a short-lived access token (~8h) and a refresh token used to mint new ones. **The refresh token rotates** — every renewal consumes the old one and issues a replacement. Present a consumed token and the server answers `invalid_grant`, at which point Claude Code marks it dead and blanks the credential on disk, so the next thing you type asks you to sign in again.
+
+Each rotation also pushes the refresh token's expiry back out to roughly 28 days from that moment, so **an account you actually use never lapses**. The 28-day clock is not what costs you a login. Losing a rotation is. If the vault holds a snapshot taken before a rotation, restoring it hands the server a token that has already been spent.
+
+That is what `ccswitch autosync install` is for: a systemd path unit watches the credential file and captures every rotation as it is written, so the vault can never fall behind. Without it the vault only catches up when you happen to run a ccswitch command, which leaves a window.
+
+The access token expiring is a non-event — Claude Code renews it on use — so `ccswitch list` does not report it. `ccswitch doctor` shows it if you want the detail.
 
 That matters for a tool that snapshots and restores credentials. ccswitch keeps the vault in step by syncing the live credential into the active account's slot on **every** run, not only when you switch — a token Claude Code rotated mid-session, or a `/login` you typed inside Claude Code, would otherwise never reach the vault, and restoring that stale snapshot later would hand the server a consumed token. `ccswitch list` reports a slot whose tokens have been cleared as `BROKEN - re-login`, and its `RELOGIN` column counts down the refresh token's real remaining life.
 

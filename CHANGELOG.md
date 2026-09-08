@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-08
+
+### Added
+
+- `ccswitch autosync install` puts a systemd path unit on the credential file,
+  so every token rotation reaches the vault as it is written. Until now the
+  vault only caught up when a ccswitch command happened to run, which left a
+  window in which a rotation could be lost - and losing a rotation is the only
+  thing that actually costs a browser re-login. `uninstall` and `status` do
+  what they say. Not available with the macOS keychain backend, which has no
+  file to watch.
+
+- `ccswitch sync` captures the live credential into the account it belongs to.
+
+### Changed
+
+- `ccswitch sync` and the automatic sync now route the live credential to the
+  stored account whose email matches it, and follow it, rather than writing
+  into whatever slot is marked active. Signing in with `/login` inside Claude
+  Code changes the live account without telling ccswitch; the rotation that
+  follows belongs to that account. A credential matching no stored account is
+  still refused rather than guessed at.
+
+- `ccswitch list` reports `ready` instead of the access token's remaining life.
+  The access token expires roughly every 8 hours by design and Claude Code
+  renews it on use, so showing `expired 9h ago` as an account's headline status
+  made a routine non-event look like a broken account. `ccswitch doctor` still
+  shows it.
+
 ## [0.5.1] - 2026-09-08
 
 ### Fixed

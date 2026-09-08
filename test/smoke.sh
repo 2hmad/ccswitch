@@ -186,17 +186,34 @@ wait "$fake_pid" "$real_pid" 2>/dev/null || true
 # Signing in with /login inside Claude Code changes the live account without
 # telling ccswitch. A blind 'save' would then write that credential over a
 # different account's slot.
+# A rotation belongs to whichever account is really signed in, which a /login
+# inside Claude Code can change without telling ccswitch. Route it by email and
+# follow it, rather than writing it into whatever slot happens to be active.
+gamma_before="$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/gamma/credentials.json'))['claudeAiOauth']['accessToken'])")"
 seed_login UID-B b@example.com TOK-B9 9      # live is beta's, active is gamma
-if ccswitch save >/dev/null 2>&1; then bad "save refuses a mismatched identity"; else ok "save refuses a mismatched identity"; fi
-check "save names the owning account" \
-  "$(ccswitch save 2>&1 | grep -c "belongs to 'beta'")" "1"
-check "mismatched save left the active slot alone" \
+ccswitch list >/dev/null                     # any command, not a switch
+check "sync follows the live account"     "$(ccswitch current)" "beta"
+check "sync stored it in the right slot" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-B9"
+check "sync left the previous slot alone" \
   "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/gamma/credentials.json'))['claudeAiOauth']['accessToken'])")" \
-  "TOK-ROTATED"
+  "$gamma_before"
+
+# a credential belonging to no stored account has no home - refuse it rather
+# than guessing, and change nothing
+seed_login UID-X stranger@example.org TOK-X 9
+if ccswitch save >/dev/null 2>&1; then bad "save refuses an unknown account"; else ok "save refuses an unknown account"; fi
+check "unknown-account save changed nothing" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-B9"
+
+# an explicit target still works, and is the escape hatch for a new machine
+seed_login UID-B b@example.com TOK-B10 9
 ccswitch save beta >/dev/null
 check "targeted save stores into the named slot" \
   "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
-  "TOK-B9"
+  "TOK-B10"
 
 # Version comparison must be numeric, not lexical: "0.10.0" is newer than
 # "0.9.0" but sorts before it as a string.
