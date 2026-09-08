@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.6.0"
+VERSION="0.6.1"
 
 # --- locations --------------------------------------------------------------
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -675,6 +675,18 @@ cmd_autosync() {
     *) die "autosync currently supports systemd only (this is $(uname -s))" ;;
   esac
   command -v systemctl >/dev/null 2>&1 || die "systemctl was not found"
+  # WSL ships systemctl but does not run systemd as init unless it is switched
+  # on, and 'systemctl --user' then fails with a confusing message.
+  if [ ! -d /run/systemd/system ]; then
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+      die "systemd is not running. On WSL, enable it and restart the distro:
+       printf '[boot]\\nsystemd=true\\n' | sudo tee -a /etc/wsl.conf
+       then, from Windows: wsl --shutdown
+       Without it, run 'ccswitch sync' after signing in instead."
+    fi
+    die "systemd is not running as init, so a user path unit cannot be
+       installed. Run 'ccswitch sync' after signing in instead."
+  fi
 
   case "$action" in
     install)

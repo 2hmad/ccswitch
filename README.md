@@ -270,6 +270,59 @@ ccswitch add personal
 
 Then `ccswitch list` to confirm all of them are there.
 
+## Moving to another machine
+
+The vault is portable, but **an account cannot be live on two machines at once**. Refresh tokens rotate: whichever machine renews first invalidates the other's copy, and the loser gets a forced browser sign-in. So this is a move, not a copy — decide which machine owns the accounts.
+
+On the machine you are leaving:
+
+```bash
+ccswitch sync                              # capture the newest rotation first
+ccswitch backup ~/ccswitch-move.tar.gz     # the whole vault
+```
+
+`ccswitch sync` matters. The backup is only as fresh as the vault, and a rotation that has not been captured yet would be left behind — you would carry an already-spent token to the new machine.
+
+Copy it over a channel you trust, because it contains live session tokens:
+
+```bash
+scp ~/ccswitch-move.tar.gz you@laptop:~/
+```
+
+On the new machine:
+
+```bash
+npm install -g @2hmad/ccswitch     # or the curl installer
+ccswitch restore ~/ccswitch-move.tar.gz
+ccswitch autosync install
+ccswitch list                      # every account should read 'ready'
+shred -u ~/ccswitch-move.tar.gz    # it holds live tokens
+```
+
+Then on the old machine, stop using those accounts — `ccswitch rm <name>` for each, or delete `~/.config/ccswitch` outright. Leaving them behind is what causes the two machines to fight over rotations.
+
+### What the vault does not carry
+
+ccswitch stores only the credential and the identity it belongs to. Your MCP servers, plugins, skills, agents, commands, history and `CLAUDE.md` live in `~/.claude` and `~/.claude.json`, and are the same for every account — copy them separately if you want the same setup:
+
+```bash
+tar czf ~/claude-config.tar.gz -C ~ .claude .claude.json
+```
+
+Restore that **before** `ccswitch restore`, since it overwrites `~/.claude.json` — which is also where the active account's identity lives.
+
+### On WSL
+
+WSL behaves like Linux, and the file backend applies. One catch: `ccswitch autosync` and the scheduled refresh both need systemd, which WSL does not run as init unless you switch it on:
+
+```bash
+printf '[boot]\nsystemd=true\n' | sudo tee -a /etc/wsl.conf
+```
+
+Then `wsl --shutdown` from Windows and reopen. Without it, `ccswitch autosync install` will tell you so, and you can run `ccswitch sync` by hand after signing in instead.
+
+Keep everything inside the WSL filesystem (`~`), not under `/mnt/c`. Windows drives do not carry Unix permissions, so the vault could not be locked down to mode 700.
+
 ## Platform support
 
 | Platform      | Status                                           |

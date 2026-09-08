@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-08
+
+### Added
+
+- A "Moving to another machine" guide, covering the part that is not a file
+  copy: refresh tokens rotate, so an account cannot be live on two machines at
+  once - whichever renews first invalidates the other. It also covers syncing
+  before taking the backup, moving the shared `~/.claude` config separately,
+  and the WSL caveats.
+
+### Fixed
+
+- `ccswitch autosync install` gave a confusing systemd error on WSL, which
+  ships `systemctl` but does not run systemd as init unless enabled. It now
+  detects that and prints the `/etc/wsl.conf` fix, or points at `ccswitch sync`
+  where systemd is genuinely unavailable.
+
 ## [0.6.0] - 2026-09-08
 
 ### Added
