@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 
 # --- locations --------------------------------------------------------------
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -312,6 +312,13 @@ save_active() {
   local cur; cur="$(active_name)"
   [ -n "$cur" ] || return 0
   cred_exists || return 0
+  # A cleared credential is worth nothing, so there is nothing to save - but it
+  # must not stop us leaving. Being signed out is exactly when switching away
+  # matters most, and capture_into refuses a cleared credential by design.
+  cred_live_ok || {
+    warn "the live credential is signed out - leaving ${B}$cur${RST} as last saved"
+    return 0
+  }
   capture_into "$cur"
 }
 
@@ -326,11 +333,16 @@ def ident(p):
         d = json.load(open(p))
     except Exception:
         return None
-    return (d.get("userID"), ((d.get("oauthAccount") or {}).get("emailAddress")))
+    email = (d.get("oauthAccount") or {}).get("emailAddress")
+    return (email or "").strip().lower() or None
+# Match on the account's email alone. userID is not the account identifier: the
+# same userID has been observed against two different accounts, and it changes
+# across logins, so comparing it produced false mismatches - which silently
+# disabled the sync that keeps the vault from holding a consumed token.
 live, stored = ident(sys.argv[1]), ident(sys.argv[2])
 # Unknown on either side is not a mismatch we can act on - stay conservative
 # and only block when both are known and actually differ.
-raise SystemExit(1 if (live and stored and any(live) and any(stored) and live != stored) else 0)
+raise SystemExit(1 if (live and stored and live != stored) else 0)
 PYEOF
 }
 

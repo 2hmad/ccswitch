@@ -209,6 +209,55 @@ check "version_gt equal is false"  "$(vg 0.5.0 0.5.0)"   "no"
 check "version_gt 1.0.0 > 0.99.9"  "$(vg 1.0.0 0.99.9)"  "yes"
 check "version_gt handles shorts"  "$(vg 0.5.1 0.5)"     "yes"
 
+# Being signed out must not trap you on the dead account. capture_into refuses
+# a cleared credential by design, but that refusal must not abort the switch -
+# switching away is exactly what you need when a session has died.
+python3 -c "
+import json,os
+h=os.environ['HOME']
+json.dump({'claudeAiOauth':{'accessToken':'','refreshToken':'','expiresAt':0,
+                            'refreshTokenExpiresAt':0}},
+          open(h+'/.claude/.credentials.json','w'))"
+before_gamma="$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/gamma/credentials.json'))['claudeAiOauth']['accessToken'])")"
+if ccswitch use beta --force >/dev/null 2>&1; then ok "can switch away from a signed-out session"; else bad "can switch away from a signed-out session"; fi
+check "signed-out switch landed"        "$(ccswitch current)" "beta"
+check "signed-out switch kept the slot" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/gamma/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "$before_gamma"
+
+# userID in .claude.json is not the account identifier - the same value has been
+# seen against two different accounts, and it changes across logins. Matching on
+# it produced false mismatches that silently disabled the sync.
+python3 -c "
+import json,os,time
+h=os.environ['HOME']
+d=json.load(open(h+'/.claude.json')); d['userID']='A-BRAND-NEW-INSTALL-ID'
+d['oauthAccount']={'emailAddress':'b@example.com'}
+json.dump(d,open(h+'/.claude.json','w'),indent=2)
+json.dump({'claudeAiOauth':{'accessToken':'TOK-B-ROT','refreshToken':'r-brot',
+                            'expiresAt':int((time.time()+8*3600)*1000),
+                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+          open(h+'/.claude/.credentials.json','w'))"
+ccswitch list >/dev/null
+check "new userID with same email still syncs" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-B-ROT"
+
+# but a genuinely different account must still be refused
+python3 -c "
+import json,os,time
+h=os.environ['HOME']
+d=json.load(open(h+'/.claude.json')); d['oauthAccount']={'emailAddress':'stranger@example.org'}
+json.dump(d,open(h+'/.claude.json','w'),indent=2)
+json.dump({'claudeAiOauth':{'accessToken':'TOK-STRANGER','refreshToken':'r-s',
+                            'expiresAt':int((time.time()+8*3600)*1000),
+                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+          open(h+'/.claude/.credentials.json','w'))"
+ccswitch list >/dev/null
+check "a different email is still not synced" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-B-ROT"
+
 # error paths must exit non-zero
 must_fail() {  # $1=label, rest=command
   local label="$1"; shift

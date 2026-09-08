@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-08
+
+### Fixed
+
+- Being signed out trapped you on the dead account. `capture_into` refuses a
+  cleared credential by design, but `save_active` let that refusal abort the
+  whole switch, so `ccswitch use <other>` died with "the live credential has
+  been cleared - refusing to overwrite '<current>'". Switching away is exactly
+  what you need when a session dies. It now warns, leaves the slot at its last
+  saved state, and carries on with the switch. Regression from 0.4.0.
+
+- `identity_matches` compared `userID` as well as the account email, but
+  `userID` in `.claude.json` is not the account identifier: the same value has
+  been observed against two different accounts, and it changes across logins.
+  Any such change produced a false mismatch, which silently disabled the sync
+  that keeps the vault from holding a consumed refresh token - quietly
+  reopening the daily re-login bug 0.4.0 set out to close. Matching is now on
+  the email alone, and a genuinely different account is still refused.
+
 ## [0.5.0] - 2026-09-06
 
 ### Added
