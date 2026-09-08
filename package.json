@@ -1,6 +1,6 @@
 {
   "name": "@2hmad/ccswitch",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Switch between multiple Claude Code accounts with one command, keeping MCP servers, plugins, skills, agents and history shared",
   "keywords": [
     "claude",

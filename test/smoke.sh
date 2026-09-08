@@ -85,7 +85,7 @@ python3 -c "
 import json,os,time
 h=os.environ['HOME']
 json.dump({'claudeAiOauth':{'accessToken':'TOK-ROTATED','refreshToken':'r-rotated',
-                            'expiresAt':int((time.time()+8*3600)*1000),
+                            'expiresAt':int((time.time()+20*3600)*1000),
                             'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
           open(h+'/.claude/.credentials.json','w'))"
 ccswitch list >/dev/null   # any command, not a switch
@@ -120,7 +120,7 @@ d['oauthAccount']={'emailAddress':'a@example.com'}
 json.dump(d,open(h+'/.claude.json','w'),indent=2)
 import time
 json.dump({'claudeAiOauth':{'accessToken':'TOK-ROTATED','refreshToken':'r-rotated',
-                            'expiresAt':int((time.time()+8*3600)*1000),
+                            'expiresAt':int((time.time()+20*3600)*1000),
                             'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
           open(h+'/.claude/.credentials.json','w'))"
 
@@ -252,7 +252,7 @@ d=json.load(open(h+'/.claude.json')); d['userID']='A-BRAND-NEW-INSTALL-ID'
 d['oauthAccount']={'emailAddress':'b@example.com'}
 json.dump(d,open(h+'/.claude.json','w'),indent=2)
 json.dump({'claudeAiOauth':{'accessToken':'TOK-B-ROT','refreshToken':'r-brot',
-                            'expiresAt':int((time.time()+8*3600)*1000),
+                            'expiresAt':int((time.time()+20*3600)*1000),
                             'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
           open(h+'/.claude/.credentials.json','w'))"
 ccswitch list >/dev/null
@@ -274,6 +274,38 @@ ccswitch list >/dev/null
 check "a different email is still not synced" \
   "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
   "TOK-B-ROT"
+
+# A stale credentials.json - left by an older install, or sitting on a machine
+# a vault was just restored onto - must never overwrite a newer stored token.
+# Rotation always moves the access-token expiry forward, so an older expiry
+# means the live file is the stale one.
+good_beta="$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")"
+python3 -c "
+import json,os,time
+h=os.environ['HOME']
+d=json.load(open(h+'/.claude.json')); d['oauthAccount']={'emailAddress':'b@example.com'}
+json.dump(d,open(h+'/.claude.json','w'),indent=2)
+json.dump({'claudeAiOauth':{'accessToken':'TOK-ANCIENT','refreshToken':'r-anc',
+                            'expiresAt':int((time.time()-103*86400)*1000),
+                            'refreshTokenExpiresAt':int((time.time()-75*86400)*1000)}},
+          open(h+'/.claude/.credentials.json','w'))"
+ccswitch list >/dev/null
+check "a stale credential does not clobber a newer one" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "$good_beta"
+
+# but a real rotation, which moves the expiry forward, must still be adopted
+python3 -c "
+import json,os,time
+h=os.environ['HOME']
+json.dump({'claudeAiOauth':{'accessToken':'TOK-B-NEWER','refreshToken':'r-newer',
+                            'expiresAt':int((time.time()+30*3600)*1000),
+                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+          open(h+'/.claude/.credentials.json','w'))"
+ccswitch list >/dev/null
+check "a newer credential is still adopted" \
+  "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
+  "TOK-B-NEWER"
 
 # error paths must exit non-zero
 must_fail() {  # $1=label, rest=command

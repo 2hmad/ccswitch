@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.6.1"
+VERSION="0.6.2"
 
 # --- locations --------------------------------------------------------------
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -329,6 +329,29 @@ save_active() {
   capture_into "$cur"
 }
 
+# True when credential $1 is at least as new as $2. Rotation always moves the
+# access token's expiry forward, so an older expiry means $1 is stale - a
+# leftover file from a previous install, or one restored onto a machine that
+# already had an older copy. Adopting it would throw away a live token.
+cred_newer() {  # $1=candidate  $2=incumbent
+  python3 - "$1" "$2" <<'PYEOF'
+import json, os, sys
+def exp(p):
+    try:
+        return (json.load(open(p)).get("claudeAiOauth") or {}).get("expiresAt") or 0
+    except Exception:
+        return 0
+new, old = exp(sys.argv[1]), exp(sys.argv[2])
+# No incumbent expiry: nothing to lose, accept. No candidate expiry: we cannot
+# show it is newer, so refuse rather than risk clobbering a good token.
+if not old:
+    raise SystemExit(0)
+if not new:
+    raise SystemExit(1)
+raise SystemExit(0 if new >= old else 1)
+PYEOF
+}
+
 # True when the live .claude.json identity is the one stored for $1.
 identity_matches() {  # $1=account name
   python3 - "$CC_JSON" "$ACCOUNTS/$1/identity.json" <<'PYEOF'
@@ -374,7 +397,7 @@ sync_active() {
   local stored="$ACCOUNTS/$cur/credentials.json"
   local tmp; tmp="$(mktemp)"
   cred_read > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
-  if [ -s "$tmp" ] && ! cmp -s "$tmp" "$stored"; then
+  if [ -s "$tmp" ] && ! cmp -s "$tmp" "$stored" && cred_newer "$tmp" "$stored"; then
     mkdir -p "$ACCOUNTS/$cur"
     mv "$tmp" "$stored"
     chmod 600 "$stored"

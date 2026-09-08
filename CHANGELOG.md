@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-08
+
+### Fixed
+
+- A stale credential could destroy a newer stored one. `sync_active` adopted
+  the live credential whenever it merely *differed* from the stored copy, with
+  no notion of which was newer. Restoring a vault onto a machine that already
+  had an old `~/.claude/.credentials.json` therefore overwrote the freshly
+  restored tokens with the leftover ones on the very next ccswitch command -
+  instantly, once `autosync` is watching. Hit in practice on a WSL install:
+  a vault moved across was clobbered by a credential 103 days old.
+
+  Sync now adopts a live credential only when its access-token expiry is at
+  least as late as the stored one. Rotation always moves that expiry forward,
+  so an earlier expiry identifies the live file as the stale side. A live
+  credential with no expiry at all is refused rather than trusted.
+
+  This is the mirror of the bug 0.4.0 fixed: that one lost rotations, this one
+  overwrote good tokens with old ones.
+
 ## [0.6.1] - 2026-09-08
 
 ### Added
