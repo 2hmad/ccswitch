@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-09
+
+### Added
+
+- ccswitch records which machine last captured each account, and says so when
+  that is not this one. Two machines cannot share one stored credential:
+  refresh tokens rotate, so only the holder of the newest link stays signed in
+  and the other gets a forced `/login`. ccswitch cannot prevent this - the
+  server decides - but it no longer leaves it as a mystery. `ccswitch list`
+  warns, and `ccswitch doctor` names the machine per account and explains why
+  sharing a copied credential cannot work.
+
+  The marker travels inside `ccswitch backup`, so restoring a vault onto a
+  second machine warns immediately rather than after the first surprise
+  logout.
+
+### Note
+
+- Copying a vault to a second machine is a **move**, not a way to use an
+  account in two places. To use the same account on two machines, sign in
+  separately on each (`ccswitch login <name>`): each sign-in gets its own
+  token chain, which is what makes them independent.
+
 ## [0.6.2] - 2026-09-08
 
 ### Fixed

@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.6.2"
+VERSION="0.7.0"
 
 # --- locations --------------------------------------------------------------
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -302,6 +302,7 @@ capture_into() {  # $1=account name
   mv "$tmp" "$d/credentials.json"
   identity_extract "$CC_JSON" > "$d/identity.json"
   chmod 700 "$d"; chmod 600 "$d"/*.json
+  note_host "$n"
 }
 
 # Restore an account slot into the live location.
@@ -327,6 +328,40 @@ save_active() {
     return 0
   }
   capture_into "$cur"
+}
+
+# Which machine last captured an account. Refresh tokens rotate, so a token is
+# only good for whoever holds the newest link in the chain: two machines sharing
+# one stored credential keep signing each other out. ccswitch cannot prevent
+# that - the server is the arbiter - but it can say so rather than leaving a
+# mystifying forced /login.
+this_host() { uname -n 2>/dev/null || printf 'unknown'; }
+
+note_host() {  # $1=account name
+  printf '%s\n' "$(this_host)" > "$ACCOUNTS/$1/host" 2>/dev/null || true
+  chmod 600 "$ACCOUNTS/$1/host" 2>/dev/null || true
+}
+
+# Print the other machine that last wrote $1; nothing when it was this one.
+foreign_host() {  # $1=account name
+  local f="$ACCOUNTS/$1/host" h
+  [ -f "$f" ] || return 1
+  h="$(head -1 "$f" 2>/dev/null)"
+  [ -n "$h" ] && [ "$h" != "$(this_host)" ] || return 1
+  printf '%s' "$h"
+}
+
+warn_if_shared() {
+  local d n h
+  for d in "$ACCOUNTS"/*/; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d")"
+    h="$(foreign_host "$n" || true)"
+    if [ -n "$h" ]; then
+      warn "last used on another machine (${B}$h${RST}) - see 'ccswitch doctor'"
+      return 0
+    fi
+  done
 }
 
 # True when credential $1 is at least as new as $2. Rotation always moves the
@@ -405,6 +440,7 @@ sync_active() {
     chmod 600 "$ACCOUNTS/$cur/identity.json"
     # The live credential is this account's, so this account is what is signed
     # in - follow it rather than leaving 'active' pointing somewhere stale.
+    note_host "$cur"
     printf '%s\n' "$cur" > "$ACTIVE_FILE"
   else
     rm -f "$tmp"
@@ -459,6 +495,7 @@ cmd_list() {
       "$(fmt_status "${st%%|*}")" "$(fmt_days "${st##*|}")"
   done
   [ "$found" = 1 ] || info "${DIM}no accounts yet - run: ccswitch login <name>${RST}"
+  warn_if_shared
   update_notice
 }
 
@@ -920,8 +957,16 @@ cmd_doctor() {
   for _d in "$ACCOUNTS"/*/; do
     [ -d "$_d" ] || continue
     _n="$(basename "$_d")"; _st="$(cred_state "$_d/credentials.json")"
-    printf '    %-12s access %-18s re-login in %s\n' "$_n" "$(fmt_left "${_st%%|*}")" "$(fmt_days "${_st##*|}")"
+    printf '    %-12s access %-18s re-login in %-5s last on %s\n' "$_n" \
+      "$(fmt_left "${_st%%|*}")" "$(fmt_days "${_st##*|}")" "$(head -1 "$_d/host" 2>/dev/null || echo '?')"
   done
+  if for _d in "$ACCOUNTS"/*/; do [ -d "$_d" ] && foreign_host "$(basename "$_d")" >/dev/null && break; done; then
+    printf '\n  %swarning:%s an account above was last used on a different machine.\n' "$YLW" "$RST"
+    printf '  A refresh token rotates on every use, so only the machine holding the\n'
+    printf '  newest one stays signed in - the other gets a forced /login. Sharing a\n'
+    printf '  copied credential cannot work. Sign in separately on each machine\n'
+    printf "  ('ccswitch login <name>' there), or keep the account on one machine.\n"
+  fi
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     printf '\n  %sCLAUDE_CONFIG_DIR is set%s (%s)\n' "$YLW" "$RST" "$CLAUDE_CONFIG_DIR"
     printf '  ccswitch is operating on that directory rather than ~/.claude.\n'

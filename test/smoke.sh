@@ -307,6 +307,19 @@ check "a newer credential is still adopted" \
   "$(python3 -c "import json,os;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['accessToken'])")" \
   "TOK-B-NEWER"
 
+# Two machines cannot share one stored credential: rotation means only the
+# holder of the newest link stays signed in. ccswitch cannot prevent that, but
+# it must say so rather than leaving a mystifying forced /login.
+check "capture records this machine" \
+  "$(head -1 "$CCSWITCH_HOME/accounts/beta/host" 2>/dev/null)" "$(uname -n)"
+echo "some-other-machine" > "$CCSWITCH_HOME/accounts/beta/host"
+check "list warns about a foreign vault" \
+  "$(ccswitch list 2>&1 | grep -c 'another machine (some-other-machine)')" "1"
+check "doctor names the machine"        "$(ccswitch doctor 2>&1 | grep -c 'last on some-other-machine')" "1"
+check "doctor explains why it breaks"   "$(ccswitch doctor 2>&1 | grep -c 'rotates on every use')" "1"
+printf '%s\n' "$(uname -n)" > "$CCSWITCH_HOME/accounts/beta/host"
+check "no warning once it is local"     "$(ccswitch list 2>&1 | grep -c 'another machine')" "0"
+
 # error paths must exit non-zero
 must_fail() {  # $1=label, rest=command
   local label="$1"; shift
