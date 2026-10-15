@@ -340,6 +340,23 @@ use_out="$(ccswitch use delta --force 2>&1)"
 check "use: lapsed access token not called expired" "$(grep -c expired <<<"$use_out" || true)" "0"
 check "use: reports re-login days" "$(grep -c 're-login in 2[78]d' <<<"$use_out" || true)" "1"
 
+# An npm copy updates through npm, against the npm registry - not GitHub, whose
+# latest tag may be a release npm never received.
+NPMROOT="$TMP/npmglobal"
+mkdir -p "$NPMROOT/lib/node_modules/@2hmad/ccswitch/bin" "$NPMROOT/bin" "$TMP/reg/@2hmad/ccswitch" "$TMP/stub"
+cp "$ROOT/bin/ccswitch" "$NPMROOT/lib/node_modules/@2hmad/ccswitch/bin/ccswitch"
+ln -s ../lib/node_modules/@2hmad/ccswitch/bin/ccswitch "$NPMROOT/bin/ccswitch"
+echo '{"version":"99.0.0"}' > "$TMP/reg/@2hmad/ccswitch/latest"
+printf '#!/bin/sh\necho "$@" > "%s/npm-args"\n' "$TMP" > "$TMP/stub/npm"
+chmod +x "$TMP/stub/npm"
+npm_run() { PATH="$NPMROOT/bin:$TMP/stub:$PATH" CCSWITCH_NPM_REGISTRY="file://$TMP/reg" ccswitch "$@" 2>&1; }
+check "update: npm copy checks the registry" "$(npm_run update --check | grep -c 'latest:  99.0.0')" "1"
+npm_run update >/dev/null || true
+check "update: npm copy runs npm install" "$(cat "$TMP/npm-args" 2>/dev/null)" "install -g @2hmad/ccswitch@99.0.0"
+echo '{"version":"0.0.1"}' > "$TMP/reg/@2hmad/ccswitch/latest"
+rm -f "$TMP/npm-args"
+check "update: npm copy up to date skips npm" "$(npm_run update | grep -c 'already up to date')$(test -e "$TMP/npm-args" && echo ran)" "1"
+
 ccswitch doctor >/dev/null 2>&1 || true
 ok "doctor runs"
 ccswitch completion zsh  >/dev/null && ok "zsh completion"

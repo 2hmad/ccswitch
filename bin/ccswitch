@@ -826,6 +826,8 @@ cmd_restore() {
 
 # --- self-update ------------------------------------------------------------
 REPO_SLUG="${CCSWITCH_REPO:-2hmad/ccswitch}"
+NPM_PKG="@2hmad/ccswitch"
+NPM_REGISTRY="${CCSWITCH_NPM_REGISTRY:-https://registry.npmjs.org}"
 UPDATE_CACHE="$VAULT/.latest-version"
 
 # The real path of this script, following the symlink a package manager leaves
@@ -858,14 +860,38 @@ fetch_url() {  # $1=url -> body on stdout, non-zero on failure
   fi
 }
 
-# Latest published release tag, without the leading v.
+# Latest version this copy can actually update to, without a leading v. An npm
+# copy asks the registry rather than GitHub: a tag whose npm publish failed is
+# a release npm users cannot install, so it must not be offered to them.
 latest_version() {
+  if [ "$(install_method)" = "npm" ]; then
+    fetch_url "$NPM_REGISTRY/$NPM_PKG/latest" 2>/dev/null |
+      python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("version") or "")
+except Exception:
+    pass' 2>/dev/null
+    return
+  fi
   fetch_url "https://api.github.com/repos/$REPO_SLUG/releases/latest" 2>/dev/null |
     python3 -c 'import json,sys
 try:
     print((json.load(sys.stdin).get("tag_name") or "").lstrip("v"))
 except Exception:
     pass' 2>/dev/null
+}
+
+# Update an npm copy through npm itself, so npm's own record of the package
+# stays true. Pin the exact version that was checked, not @latest, so what is
+# installed is what was reported.
+npm_update_to() {  # $1=version
+  command -v npm >/dev/null 2>&1 || die "npm is not on PATH - update with:
+       npm install -g $NPM_PKG@$1"
+  info "running: npm install -g $NPM_PKG@$1"
+  npm install -g "$NPM_PKG@$1" ||
+    die "npm install failed - if it needs more permissions, run it yourself:
+       npm install -g $NPM_PKG@$1"
+  info "${GRN}updated${RST} $VERSION -> ${B}$1${RST}"
 }
 
 # Numeric compare: 0 when $1 is newer than $2.
@@ -913,8 +939,9 @@ cmd_update() {
   method="$(install_method)"
 
   info "current: ${B}$VERSION${RST}"
+  local where="GitHub"; [ "$method" != "npm" ] || where="the npm registry"
   local latest; latest="$(update_check)" ||
-    die "could not reach GitHub to check for updates"
+    die "could not reach $where to check for updates"
   info "latest:  ${B}$latest${RST}"
 
   if ! version_gt "$latest" "$VERSION"; then
@@ -924,8 +951,7 @@ cmd_update() {
   [ -z "$check_only" ] || { info "run 'ccswitch update' to install it"; return 0; }
 
   case "$method" in
-    npm)  die "this copy was installed with npm - update it with:
-       npm update -g @2hmad/ccswitch" ;;
+    npm)  npm_update_to "$latest"; return 0 ;;
     brew) die "this copy was installed with Homebrew - update it with:
        brew upgrade ccswitch" ;;
   esac

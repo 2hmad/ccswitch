@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `ccswitch update` now updates an npm install itself, by running
+  `npm install -g @2hmad/ccswitch@<version>`, instead of telling you to. It also
+  checks the npm registry rather than GitHub for the latest version, so it
+  never offers a release that is not on npm yet.
+
 ## [0.7.2] - 2026-10-15
 
 ### Changed
