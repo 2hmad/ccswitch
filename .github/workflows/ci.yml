@@ -101,20 +101,23 @@ jobs:
     needs: lint
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    # Trusted publishing: npm authenticates this workflow by its GitHub OIDC
+    # identity, so there is no token to store, leak or rotate. The package's
+    # trusted publisher on npmjs.com must name this repo and ci.yml.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      # OIDC publishing needs npm >= 11.5.1.
+      - name: Update npm
+        run: npm install -g npm@latest
+
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::warning::NPM_TOKEN is not set - skipping the npm publish"
-            exit 0
-          fi
-          npm publish --access public
+        run: npm publish --access public
