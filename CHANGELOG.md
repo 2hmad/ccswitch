@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-15
+
+### Changed
+
+- ccswitch is now on npm: `npm install -g @2hmad/ccswitch`, and
+  `npm update -g` / `npm uninstall -g` to update or remove it. Releases are
+  published from CI with npm trusted publishing, so each version carries a
+  provenance attestation linking it to the exact commit and workflow that
+  built it.
+
 ## [0.7.1] - 2026-10-15
 
 ### Fixed
