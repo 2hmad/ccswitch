@@ -75,6 +75,21 @@ ccswitch update --check    # just report what is available
 
 `ccswitch update` knows how it was installed and won't fight your package manager — an npm copy is told to run `npm update -g @2hmad/ccswitch` rather than overwriting itself. Before replacing anything it checks the download is really ccswitch, of the expected version, and parses as valid bash, then swaps it in by rename so the running script is never written through.
 
+**Moving from the curl install to npm.** `npm update -g` only updates a package npm already has, so it does nothing for a curl-installed copy, and that copy in `~/.local/bin` usually sits ahead of npm's on `PATH`. Install with npm, remove the old copy, and re-point autosync at the new path:
+
+```bash
+npm install -g @2hmad/ccswitch
+rm ~/.local/bin/ccswitch
+ccswitch autosync install          # if you use autosync
+ccswitch --version                 # confirm the npm copy is the one running
+```
+
+**Using nvm (or another Node version manager)?** Global packages belong to one Node version, and autosync records the full path to ccswitch. After switching or upgrading Node, reinstall and re-point it, or autosync silently stops capturing rotations:
+
+```bash
+npm install -g @2hmad/ccswitch && ccswitch autosync install
+```
+
 `ccswitch list` mentions a newer version when one exists. That line is printed from a cache written by the scheduled `refresh` run, so `list` itself never touches the network. Silence it with `CCSWITCH_NO_UPDATE_NOTICE=1`.
 
 ## Uninstall
