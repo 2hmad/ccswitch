@@ -887,8 +887,11 @@ except Exception:
 npm_update_to() {  # $1=version
   command -v npm >/dev/null 2>&1 || die "npm is not on PATH - update with:
        npm install -g $NPM_PKG@$1"
-  info "running: npm install -g $NPM_PKG@$1"
-  npm install -g "$NPM_PKG@$1" ||
+  # --prefer-online: the version was just read live from the registry, but
+  # npm resolves from its metadata cache, which right after a release does not
+  # know the new version yet and fails with ETARGET.
+  info "running: npm install -g --prefer-online $NPM_PKG@$1"
+  npm install -g --prefer-online "$NPM_PKG@$1" ||
     die "npm install failed - if it needs more permissions, run it yourself:
        npm install -g $NPM_PKG@$1"
   info "${GRN}updated${RST} $VERSION -> ${B}$1${RST}"

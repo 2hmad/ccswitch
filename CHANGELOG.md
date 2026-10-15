@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ccswitch update` on an npm install could fail with "No matching version
+  found" right after a release, because npm resolved from a stale cache. It
+  now asks npm to check the registry.
+
 ## [0.8.0] - 2026-10-15
 
 ### Changed

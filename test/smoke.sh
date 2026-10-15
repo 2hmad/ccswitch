@@ -352,7 +352,7 @@ chmod +x "$TMP/stub/npm"
 npm_run() { PATH="$NPMROOT/bin:$TMP/stub:$PATH" CCSWITCH_NPM_REGISTRY="file://$TMP/reg" ccswitch "$@" 2>&1; }
 check "update: npm copy checks the registry" "$(npm_run update --check | grep -c 'latest:  99.0.0')" "1"
 npm_run update >/dev/null || true
-check "update: npm copy runs npm install" "$(cat "$TMP/npm-args" 2>/dev/null)" "install -g @2hmad/ccswitch@99.0.0"
+check "update: npm copy runs npm install" "$(cat "$TMP/npm-args" 2>/dev/null)" "install -g --prefer-online @2hmad/ccswitch@99.0.0"
 echo '{"version":"0.0.1"}' > "$TMP/reg/@2hmad/ccswitch/latest"
 rm -f "$TMP/npm-args"
 check "update: npm copy up to date skips npm" "$(npm_run update | grep -c 'already up to date')$(test -e "$TMP/npm-args" && echo ran)" "1"
