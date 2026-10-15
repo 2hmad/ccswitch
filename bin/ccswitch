@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-VERSION="0.7.0"
+VERSION="0.7.1"
 
 # --- locations --------------------------------------------------------------
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
@@ -232,6 +232,16 @@ fmt_status() {  # $1=access seconds, "none" or "dead"
   case "$1" in
     dead) printf '%sBROKEN - re-login%s' "$RED" "$RST" ;;
     *)    printf 'ready' ;;
+  esac
+}
+
+fmt_relogin() {  # $1=refresh-token seconds, "none" or "dead"
+  local s="$1"
+  case "$s" in
+    dead) printf '%sBROKEN - re-login%s' "$RED" "$RST" ;;
+    none) printf 'ready' ;;
+    *) if [ "$s" -le 0 ]; then printf '%slogin expired%s' "$RED" "$RST"
+       else printf 're-login in %s' "$(fmt_days "$s")"; fi ;;
   esac
 }
 
@@ -474,10 +484,16 @@ cmd_use() {
   save_active
   restore_from "$n"
 
-  local left; left="$(acct_expiry "$n")"
-  info "${GRN}switched to${RST} ${B}$n${RST}  ($(acct_email "$n"))  $(fmt_left "$left")"
-  if [ "$left" != "none" ] && [ "$left" -le 0 ]; then
-    warn "this token is expired - run 'ccswitch login $n' to refresh it"
+  # Judge by the refresh token, as list does. The access token lapses every ~8h
+  # by design and Claude Code renews it on first use, so its expiry says nothing
+  # about whether the account needs a re-login.
+  local st; st="$(cred_state "$ACCOUNTS/$n/credentials.json")"
+  local acc="${st%%|*}" ref="${st##*|}"
+  info "${GRN}switched to${RST} ${B}$n${RST}  ($(acct_email "$n"))  $(fmt_relogin "$ref")"
+  if [ "$acc" = "dead" ]; then
+    warn "this account is signed out - run 'ccswitch login $n'"
+  elif [ "$ref" != "none" ] && [ "$ref" -le 0 ]; then
+    warn "this login has expired - run 'ccswitch login $n'"
   fi
 }
 

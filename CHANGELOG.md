@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-15
+
+### Fixed
+
+- `ccswitch use` reported a lapsed access token as "expired" and told you to
+  run `ccswitch login`, even for an account with weeks left. The access token
+  lives ~8h by design and Claude Code renews it on first use; only the refresh
+  token decides whether a re-login is needed. `use` now judges by the refresh
+  token, as `list` already did since 0.6.0, and reports `re-login in Nd`.
+
 ## [0.7.0] - 2026-09-09
 
 ### Added

@@ -331,6 +331,15 @@ must_fail "invalid name rejected"    ccswitch add 'bad/nm'
 must_fail "login needs a name"       ccswitch login
 must_fail "refresh: unknown account rejected" ccswitch refresh nosuch
 
+# A lapsed access token is routine - Claude Code renews it on use. Switching to
+# such an account must report the refresh token's days, not cry "expired".
+seed_login UID-D d@example.com TOK-D -3
+ccswitch add delta >/dev/null
+ccswitch use beta --force >/dev/null
+use_out="$(ccswitch use delta --force 2>&1)"
+check "use: lapsed access token not called expired" "$(grep -c expired <<<"$use_out" || true)" "0"
+check "use: reports re-login days" "$(grep -c 're-login in 2[78]d' <<<"$use_out" || true)" "1"
+
 ccswitch doctor >/dev/null 2>&1 || true
 ok "doctor runs"
 ccswitch completion zsh  >/dev/null && ok "zsh completion"
