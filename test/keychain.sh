@@ -33,6 +33,11 @@ seed_login() {  # $1=uid $2=email $3=token
   mkdir -p "$HOME/.claude"
   python3 - "$1" "$2" "$3" <<'PY'
 import json, os, sys, time
+import hashlib
+# Each real login ends on its own date, and ccswitch tells logins apart by it.
+def login_end(email):
+    spread = int(hashlib.sha256(email.encode()).hexdigest()[:8], 16) % 43200 + 600
+    return int((time.time() + 28 * 86400 + spread) * 1000)
 uid, email, tok = sys.argv[1], sys.argv[2], sys.argv[3]
 h = os.environ["HOME"]
 p = h + "/.claude.json"
@@ -42,7 +47,7 @@ d["oauthAccount"] = {"emailAddress": email}
 json.dump(d, open(p, "w"), indent=2)
 cred = json.dumps({"claudeAiOauth": {"accessToken": tok, "refreshToken": "r-" + tok,
                                      "expiresAt": int((time.time() + 9 * 3600) * 1000),
-                                     "refreshTokenExpiresAt": int((time.time() + 28 * 86400) * 1000)}})
+                                     "refreshTokenExpiresAt": login_end(email)}})
 os.system('security add-generic-password -U -a "$USER" -s "Claude Code-credentials" -X '
           + cred.encode().hex())
 PY

@@ -24,11 +24,16 @@ seed_login() {  # $1=uid $2=email $3=token $4=hours
   mkdir -p "$HOME/.claude"
   python3 - "$1" "$2" "$3" "$4" <<'PY'
 import json, os, sys, time
+import hashlib
+# Each real login ends on its own date, and ccswitch tells logins apart by it.
+def login_end(email):
+    spread = int(hashlib.sha256(email.encode()).hexdigest()[:8], 16) % 43200 + 600
+    return int((time.time() + 28 * 86400 + spread) * 1000)
 uid, email, token, hours = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
 h = os.environ["HOME"]
 json.dump({"claudeAiOauth": {"accessToken": token, "refreshToken": "r-" + token,
                              "expiresAt": int((time.time() + hours * 3600) * 1000),
-                             "refreshTokenExpiresAt": int((time.time() + 28 * 86400) * 1000)}},
+                             "refreshTokenExpiresAt": login_end(email)}},
           open(h + "/.claude/.credentials.json", "w"))
 p = h + "/.claude.json"
 d = json.load(open(p)) if os.path.exists(p) else {}
@@ -103,7 +108,7 @@ d['oauthAccount']={'emailAddress':'other@example.com'}
 json.dump(d,open(h+'/.claude.json','w'),indent=2)
 json.dump({'claudeAiOauth':{'accessToken':'TOK-WRONG','refreshToken':'r-wrong',
                             'expiresAt':int((time.time()+8*3600)*1000),
-                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+                            'refreshTokenExpiresAt':int((time.time()+27*86400)*1000)}},
           open(h+'/.claude/.credentials.json','w'))"
 ccswitch list >/dev/null
 check "mismatched identity is not synced" \
@@ -253,7 +258,7 @@ d['oauthAccount']={'emailAddress':'b@example.com'}
 json.dump(d,open(h+'/.claude.json','w'),indent=2)
 json.dump({'claudeAiOauth':{'accessToken':'TOK-B-ROT','refreshToken':'r-brot',
                             'expiresAt':int((time.time()+20*3600)*1000),
-                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+                            'refreshTokenExpiresAt':json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['refreshTokenExpiresAt']}},
           open(h+'/.claude/.credentials.json','w'))"
 ccswitch list >/dev/null
 check "new userID with same email still syncs" \
@@ -268,7 +273,7 @@ d=json.load(open(h+'/.claude.json')); d['oauthAccount']={'emailAddress':'strange
 json.dump(d,open(h+'/.claude.json','w'),indent=2)
 json.dump({'claudeAiOauth':{'accessToken':'TOK-STRANGER','refreshToken':'r-s',
                             'expiresAt':int((time.time()+8*3600)*1000),
-                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+                            'refreshTokenExpiresAt':int((time.time()+27*86400)*1000)}},
           open(h+'/.claude/.credentials.json','w'))"
 ccswitch list >/dev/null
 check "a different email is still not synced" \
@@ -300,7 +305,7 @@ import json,os,time
 h=os.environ['HOME']
 json.dump({'claudeAiOauth':{'accessToken':'TOK-B-NEWER','refreshToken':'r-newer',
                             'expiresAt':int((time.time()+30*3600)*1000),
-                            'refreshTokenExpiresAt':int((time.time()+28*86400)*1000)}},
+                            'refreshTokenExpiresAt':json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/beta/credentials.json'))['claudeAiOauth']['refreshTokenExpiresAt']}},
           open(h+'/.claude/.credentials.json','w'))"
 ccswitch list >/dev/null
 check "a newer credential is still adopted" \
@@ -356,6 +361,66 @@ check "update: npm copy runs npm install" "$(cat "$TMP/npm-args" 2>/dev/null)" "
 echo '{"version":"0.0.1"}' > "$TMP/reg/@2hmad/ccswitch/latest"
 rm -f "$TMP/npm-args"
 check "update: npm copy up to date skips npm" "$(npm_run update | grep -c 'already up to date')$(test -e "$TMP/npm-args" && echo ran)" "1"
+
+# A claude session left open as another account keeps renewing that account's
+# token and writes it over the live credential, whichever account is live. Each
+# login's refreshTokenExpiresAt stays fixed across renewals, so it says whose
+# token that is - the email in .claude.json does not. Run in a fresh vault: the
+# seeds above all share one expiry and so look like a single login.
+SAVED_HOME="$HOME" SAVED_VAULT="$CCSWITCH_HOME"
+export HOME="$TMP/stale" CCSWITCH_HOME="$TMP/stale/vault"
+mkdir -p "$HOME/.claude"
+live_cred() {  # $1=token $2=hours of access left $3=days until the login ends
+  python3 - "$1" "$2" "$3" <<'PY'
+import json, os, sys, time
+t, h, d = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+json.dump({"claudeAiOauth": {"accessToken": t, "refreshToken": "r-" + t,
+                             "expiresAt": int((time.time() + h * 3600) * 1000),
+                             "refreshTokenExpiresAt": int((time.time() + d * 86400) * 1000)}},
+          open(os.environ["HOME"] + "/.claude/.credentials.json", "w"))
+PY
+}
+live_email() {
+  python3 -c "import json,os,sys;json.dump({'oauthAccount':{'emailAddress':sys.argv[1]}},open(os.environ['HOME']+'/.claude.json','w'))" "$1"
+}
+slot_tok() { python3 -c "import json,os,sys;print(json.load(open(os.environ['CCSWITCH_HOME']+'/accounts/'+sys.argv[1]+'/credentials.json'))['claudeAiOauth']['accessToken'])" "$1"; }
+live_tok() { j /.claude/.credentials.json "['claudeAiOauth']['accessToken']"; }
+
+live_email x@example.com; live_cred TOK-X 8 20; ccswitch add xa >/dev/null
+live_email y@example.com; live_cred TOK-Y 8 25; ccswitch add ya >/dev/null
+
+live_cred TOK-X2 12 20            # xa's login renewed while ya is live
+stale_out="$(ccswitch list 2>&1)"
+check "stale renewal goes to its own account" "$(slot_tok xa)" "TOK-X2"
+check "stale renewal leaves the live account" "$(slot_tok ya)" "TOK-Y"
+check "live account's token is put back"      "$(live_tok)"    "TOK-Y"
+check "active account unchanged"              "$(ccswitch current)" "ya"
+check "stale renewal is reported" "$(grep -c 'still signed in as xa' <<<"$stale_out" || true)" "1"
+
+# with no stored email to go by, it is still routed by login, and an explicit
+# save cannot file it under the wrong account
+live_email stranger@example.org; live_cred TOK-X3 16 20
+ccswitch list >/dev/null 2>&1
+check "renewal routed without a known email" "$(slot_tok xa)" "TOK-X3"
+if ccswitch save ya >/dev/null 2>&1; then bad "save refuses another login's token"; else ok "save refuses another login's token"; fi
+check "refused save left the slot alone" "$(slot_tok ya)" "TOK-Y"
+
+# a vault already holding one login under two names is how this goes wrong
+# silently - doctor must say so
+cp "$CCSWITCH_HOME/accounts/xa/credentials.json" "$CCSWITCH_HOME/accounts/ya/credentials.json"
+check "doctor flags two accounts on one login" \
+  "$(ccswitch doctor 2>&1 | grep -c 'xa and ya hold the same login')" "1"
+
+# switching with --force past an open session must say what that session does
+live_email y@example.com; live_cred TOK-Y 8 25; ccswitch save ya >/dev/null 2>&1
+( PATH="$TMP/fakebin:$PATH" exec "$TMP/fakebin/claude" ) &
+open_pid=$!
+sleep 1
+force_out="$(PATH="$TMP/fakebin:$PATH" ccswitch use xa --force 2>&1)"
+kill "$open_pid" 2>/dev/null || true; wait "$open_pid" 2>/dev/null || true
+check "use --force warns about open sessions" "$(grep -c 'open as ya' <<<"$force_out" || true)" "1"
+
+export HOME="$SAVED_HOME" CCSWITCH_HOME="$SAVED_VAULT"
 
 ccswitch doctor >/dev/null 2>&1 || true
 ok "doctor runs"

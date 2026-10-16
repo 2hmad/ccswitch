@@ -308,6 +308,12 @@ capture_into() {  # $1=account name
        Sign in again, then run 'ccswitch save'."
   fi
 
+  local owner
+  if owner="$(login_foreign_to "$tmp" "$n")"; then
+    rm -f "$tmp"
+    die "the live credential is a renewal of '$owner''s login, not '$n''s - refusing to store it as '$n'."
+  fi
+
   mkdir -p "$d"
   mv "$tmp" "$d/credentials.json"
   identity_extract "$CC_JSON" > "$d/identity.json"
@@ -337,6 +343,16 @@ save_active() {
     warn "the live credential is signed out - leaving ${B}$cur${RST} as last saved"
     return 0
   }
+  # Another account's token is not this one's to save, and must not stop the
+  # switch either.
+  local tmp owner; tmp="$(mktemp)"
+  cred_read > "$tmp" 2>/dev/null || true
+  if owner="$(login_foreign_to "$tmp" "$cur")"; then
+    rm -f "$tmp"
+    warn "the live credential is ${B}$owner${RST}'s login - leaving ${B}$cur${RST} as last saved"
+    return 0
+  fi
+  rm -f "$tmp"
   capture_into "$cur"
 }
 
@@ -397,6 +413,88 @@ raise SystemExit(0 if new >= old else 1)
 PYEOF
 }
 
+# Which login a credential belongs to. Every login ends on a fixed date, and
+# each renewal reports that same refreshTokenExpiresAt - give or take a second
+# of clock skew - so it fingerprints the login. Unlike the email in
+# .claude.json, a session cannot overwrite it with another account's.
+LOGIN_SLACK_MS=5000
+
+# Names of stored accounts holding the same login as credential file $1.
+login_owners() {  # $1=credential file
+  python3 - "$1" "$ACCOUNTS" "$LOGIN_SLACK_MS" <<'PYEOF'
+import json, os, sys
+def end(p):
+    try:
+        return (json.load(open(p)).get("claudeAiOauth") or {}).get("refreshTokenExpiresAt") or 0
+    except Exception:
+        return 0
+f, root, slack = end(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+if f:
+    for n in sorted(os.listdir(root)):
+        g = end(os.path.join(root, n, "credentials.json"))
+        if g and abs(f - g) <= slack:
+            print(n)
+PYEOF
+}
+
+# Groups of stored accounts that hold one login between them, one per line as
+# "a and b". Only one of them can be right; the others belong to someone else.
+shared_logins() {
+  python3 - "$ACCOUNTS" "$LOGIN_SLACK_MS" <<'PYEOF'
+import json, os, sys
+root, slack = sys.argv[1], int(sys.argv[2])
+ends = []
+for n in sorted(os.listdir(root)):
+    try:
+        o = json.load(open(os.path.join(root, n, "credentials.json"))).get("claudeAiOauth") or {}
+    except Exception:
+        continue
+    if o.get("refreshTokenExpiresAt") and (o.get("refreshToken") or "").strip():
+        ends.append((o["refreshTokenExpiresAt"], n))
+ends.sort()
+group = []
+for e, n in ends:
+    if group and e - group[-1][0] > slack:
+        if len(group) > 1:
+            print(" and ".join(sorted(x for _, x in group)))
+        group = []
+    group.append((e, n))
+if len(group) > 1:
+    print(" and ".join(sorted(x for _, x in group)))
+PYEOF
+}
+
+# True when credential file $1 holds another stored account's login rather
+# than $2's. Prints that account.
+login_foreign_to() {  # $1=credential file  $2=account name
+  local owners; owners="$(login_owners "$1")"
+  [ -n "$owners" ] || return 1
+  printf '%s\n' "$owners" | grep -qxF -- "$2" && return 1
+  printf '%s' "$owners" | head -1
+}
+
+# A claude session left open as another account keeps renewing that account's
+# token and writes it over the live credential, whatever is live now. Matched
+# by email it looks like a renewal of the live account, and would overwrite
+# that slot with someone else's login. Send it to its own account instead, and
+# put the live account's token back so the next claude is who it says it is.
+route_stray() {  # $1=live credential file  $2=owning account  $3=live identity's account
+  local owner="$2" cur="$3" stored="$ACCOUNTS/$2/credentials.json"
+  # A login already stored under two names cannot say which is its own - leave
+  # both alone, and let doctor report it.
+  if [ "$(login_owners "$1" | wc -l)" -eq 1 ] &&
+     ! cmp -s "$1" "$stored" && cred_newer "$1" "$stored"; then
+    cp "$1" "$stored"
+    chmod 600 "$stored"
+    note_host "$owner"
+    warn "a claude session still signed in as ${B}$owner${RST} renewed its token - saved it to $owner"
+  fi
+  if [ -n "$cur" ] && [ "$cur" != "$owner" ] && acct_exists "$cur"; then
+    cred_write "$ACCOUNTS/$cur/credentials.json"
+    warn "put ${B}$cur${RST}'s credential back - exit the claude sessions still open as $owner"
+  fi
+}
+
 # True when the live .claude.json identity is the one stored for $1.
 identity_matches() {  # $1=account name
   python3 - "$CC_JSON" "$ACCOUNTS/$1/identity.json" <<'PYEOF'
@@ -436,13 +534,22 @@ sync_active() {
   # ccswitch, and the rotation that follows belongs to that account, not to the
   # stale one. No match means we have no idea whose this is, so do nothing.
   local cur; cur="$(account_for_live_identity || true)"
-  [ -n "$cur" ] || return 0
-  acct_exists "$cur" || return 0
-
-  local stored="$ACCOUNTS/$cur/credentials.json"
   local tmp; tmp="$(mktemp)"
   cred_read > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
-  if [ -s "$tmp" ] && ! cmp -s "$tmp" "$stored" && cred_newer "$tmp" "$stored"; then
+  [ -s "$tmp" ] || { rm -f "$tmp"; return 0; }
+
+  # The email says whose account is live, not whose token this is. A token
+  # from another stored account's login goes back to that account.
+  local owner
+  if owner="$(login_foreign_to "$tmp" "$cur")"; then
+    route_stray "$tmp" "$owner" "$cur"
+    rm -f "$tmp"
+    return 0
+  fi
+
+  if [ -z "$cur" ] || ! acct_exists "$cur"; then rm -f "$tmp"; return 0; fi
+  local stored="$ACCOUNTS/$cur/credentials.json"
+  if ! cmp -s "$tmp" "$stored" && cred_newer "$tmp" "$stored"; then
     mkdir -p "$ACCOUNTS/$cur"
     mv "$tmp" "$stored"
     chmod 600 "$stored"
@@ -477,10 +584,13 @@ cmd_use() {
     return 0
   fi
 
-  if [ "$force" != "--force" ] && claude_running; then
-    die "a claude process is running - exit it first, or pass --force"
+  local open=""
+  if claude_running; then
+    [ "$force" = "--force" ] || die "a claude process is running - exit it first, or pass --force"
+    open=1
   fi
 
+  local prev; prev="$(active_name)"
   save_active
   restore_from "$n"
 
@@ -494,6 +604,12 @@ cmd_use() {
     warn "this account is signed out - run 'ccswitch login $n'"
   elif [ "$ref" != "none" ] && [ "$ref" -le 0 ]; then
     warn "this login has expired - run 'ccswitch login $n'"
+  fi
+  # An open session keeps its account's token and renews it in the background.
+  # ccswitch files those renewals under the right account, but only when it next
+  # runs, and a session that exits first takes its newest token with it.
+  if [ -n "$open" ] && [ -n "$prev" ]; then
+    warn "claude sessions still open as ${B}$prev${RST} keep renewing its token - exit them before switching back to $prev"
   fi
 }
 
@@ -1012,6 +1128,15 @@ cmd_doctor() {
     printf '  copied credential cannot work. Sign in separately on each machine\n'
     printf "  ('ccswitch login <name>' there), or keep the account on one machine.\n"
   fi
+  local _pair
+  while IFS= read -r _pair; do
+    [ -n "$_pair" ] || continue
+    printf '\n  %swarning:%s %s hold the same login.\n' "$YLW" "$RST" "$_pair"
+    printf '  A claude session left open as one account renewed its token while the\n'
+    printf '  other was live, and it was filed under the wrong name. Only one of them\n'
+    printf "  is right: run 'ccswitch login <name>' for the account that signs in wrong.\n"
+    ok=1
+  done <<<"$(shared_logins)"
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     printf '\n  %sCLAUDE_CONFIG_DIR is set%s (%s)\n' "$YLW" "$RST" "$CLAUDE_CONFIG_DIR"
     printf '  ccswitch is operating on that directory rather than ~/.claude.\n'

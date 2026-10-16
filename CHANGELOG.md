@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A claude session left open after `ccswitch <name> --force` could renew its
+  own account's token while another account was live, and ccswitch would
+  store that token under the live account. One account was overwritten with
+  the other's login, and the overwritten one was stuck needing a browser
+  re-login. Tokens are now matched to accounts by login, not by the email in
+  `.claude.json`: a stray renewal is filed under its own account, and the live
+  account's credential is put back.
+- `ccswitch doctor` now warns when two stored accounts hold the same login.
+- `ccswitch use --force` now warns that sessions still open as the previous
+  account keep renewing its token.
+
 ## [0.8.1] - 2026-10-15
 
 ### Fixed

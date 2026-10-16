@@ -255,7 +255,7 @@ Before switching away, ccswitch saves the live credential back into the account 
 
 ## Notes and caveats
 
-**One account is active at a time.** This is by design — it's the price of sharing everything. `ccswitch use` refuses to run while a `claude` process is detected; pass `--force` to override.
+**One account is active at a time.** This is by design — it's the price of sharing everything. `ccswitch use` refuses to run while a `claude` process is detected; pass `--force` to override. A session left open keeps renewing its own account's token in the background; ccswitch files those renewals under the right account, but exit the session before switching back to it, or its newest token leaves with it.
 
 **The vault holds live session tokens.** `~/.config/ccswitch` is created mode 700 and files mode 600. `ccswitch backup` produces an archive containing those tokens — encrypt it if you keep it anywhere but your own disk.
 
