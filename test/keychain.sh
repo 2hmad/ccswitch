@@ -92,6 +92,18 @@ os.system('security add-generic-password -U -a \"\$USER\" -s \"Claude Code-crede
 ccswitch beta --force >/dev/null; ccswitch alpha --force >/dev/null
 check "keychain refresh persisted" "$(tok)" "TOK-A2"
 
+# MCP server tokens in the keychain item are shared, not swapped with the login
+python3 -c "
+import json,os,subprocess
+cur=json.loads(subprocess.check_output(['security','find-generic-password','-a',os.environ['USER'],'-s','Claude Code-credentials','-w']))
+cur['mcpOAuth']={'figma|k':{'serverName':'figma','accessToken':'FIG-KC'}}
+os.system('security add-generic-password -U -a \"\$USER\" -s \"Claude Code-credentials\" -X '+json.dumps(cur).encode().hex())"
+ccswitch beta --force >/dev/null
+check "keychain: mcp token follows the switch" \
+  "$(kc_get "Claude Code-credentials" | python3 -c 'import json,sys;print(json.load(sys.stdin)["mcpOAuth"]["figma|k"]["accessToken"])' 2>/dev/null || echo MISSING)" "FIG-KC"
+check "keychain: claude token still swapped" "$(tok)" "TOK-B"
+ccswitch alpha --force >/dev/null
+
 # every account still holds a valid token, so this must skip without needing
 # 'claude' and must leave the live item alone
 ccswitch refresh --all >/dev/null

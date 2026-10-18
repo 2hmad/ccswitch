@@ -289,6 +289,123 @@ claude_running() {
   [ -n "$(claude_session_pids)" ]
 }
 
+# --- MCP server tokens --------------------------------------------------------
+# Claude Code keeps the OAuth tokens of MCP servers (mcpOAuth) in the same blob
+# as the Claude login, but they belong to your Figma, Sentry... sign-in, not to
+# the Claude account. Restoring each account's own copy hands back tokens a
+# renewal has since consumed, forcing a fresh MCP sign-in after every switch.
+# So they live in one pool shared by every account, and a switch swaps only the
+# Claude login. An isolated account keeps its own in its slot instead, for when
+# it really does sign in to a server as someone else.
+MCP_POOL="$VAULT/mcp-oauth.json"
+
+mcp_isolated() { [ -f "$ACCOUNTS/$1/mcp-isolated" ]; }
+
+# Build the pool on first run from what the vault already holds: every shared
+# account's stored copy plus the live one, keeping the newest copy of each
+# server, then give the live credential the result.
+mcp_pool_init() {
+  [ -f "$MCP_POOL" ] && return 0
+  local live="" cur d n; cur="$(active_name)"
+  local -a srcs=()
+  for d in "$ACCOUNTS"/*/; do
+    [ -d "$d" ] || continue
+    n="$(basename "$d")"
+    mcp_isolated "$n" || srcs+=("$d/credentials.json")
+  done
+  if cred_exists && ! { [ -n "$cur" ] && mcp_isolated "$cur"; }; then
+    live="$(mktemp)"
+    cred_read > "$live" 2>/dev/null || true
+    srcs+=("$live")
+  fi
+  python3 - "$MCP_POOL" ${srcs[@]+"${srcs[@]}"} <<'PYEOF'
+import json, os, sys
+def exp(e):
+    return (e.get("expiresAt") or 0) if isinstance(e, dict) else 0
+pool = {}
+# Later sources win ties, and the live credential comes last.
+for p in sys.argv[2:]:
+    try:
+        m = json.load(open(p)).get("mcpOAuth") or {}
+    except Exception:
+        continue
+    if not isinstance(m, dict):
+        continue
+    for k, v in m.items():
+        a, b = exp(v), exp(pool.get(k))
+        if k not in pool or not (a and b) or a >= b:
+            pool[k] = v
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(pool, f, indent=2)
+PYEOF
+  if [ -n "$live" ]; then
+    [ -s "$live" ] && cred_install "$live" ""
+    rm -f "$live"
+  fi
+}
+
+# Print credential $1 with its mcpOAuth replaced by the JSON object in file $2,
+# or removed when $2 is empty. Every other key, claudeAiOauth included, is left
+# exactly as it is.
+mcp_with() {  # $1=credential file  $2=mcpOAuth json file, or ""
+  python3 - "$1" "$2" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d.pop("mcpOAuth", None)
+if sys.argv[2]:
+    d["mcpOAuth"] = json.load(open(sys.argv[2]))
+print(json.dumps(d))
+PYEOF
+}
+
+# Install credential $1 as live for account $2 ("" for one ccswitch does not
+# track): a shared account gets the pool's MCP tokens, an isolated one its own.
+cred_install() {  # $1=credential file  $2=account name, or ""
+  if [ -n "$2" ] && mcp_isolated "$2"; then
+    cred_write "$1"
+    return
+  fi
+  mcp_pool_init
+  local tmp; tmp="$(mktemp)"
+  if mcp_with "$1" "$MCP_POOL" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    cred_write "$tmp"
+  else
+    cred_write "$1"
+  fi
+  rm -f "$tmp"
+}
+
+# Take the MCP tokens of credential $1, captured from shared account $2, as the
+# pool. The live credential is the truth, so a server signed out of drops out
+# of the pool. A credential with no mcpOAuth key at all - a fresh /login writes
+# one - says nothing about MCP sign-ins, and leaves the pool alone.
+mcp_absorb() {  # $1=credential file  $2=account name
+  mcp_isolated "$2" && return 0
+  mcp_pool_init
+  python3 - "$1" "$MCP_POOL" <<'PYEOF'
+import json, os, sys
+try:
+    m = json.load(open(sys.argv[1])).get("mcpOAuth")
+except Exception:
+    raise SystemExit
+if not isinstance(m, dict):
+    raise SystemExit
+try:
+    if json.load(open(sys.argv[2])) == m:
+        raise SystemExit
+except SystemExit:
+    raise
+except Exception:
+    pass
+tmp = sys.argv[2] + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(m, f, indent=2)
+os.replace(tmp, sys.argv[2])
+PYEOF
+}
+
 # Snapshot the live credential+identity into an account slot.
 capture_into() {  # $1=account name
   local n="$1" d="$ACCOUNTS/$1"
@@ -316,6 +433,7 @@ capture_into() {  # $1=account name
 
   mkdir -p "$d"
   mv "$tmp" "$d/credentials.json"
+  mcp_absorb "$d/credentials.json" "$n"
   identity_extract "$CC_JSON" > "$d/identity.json"
   chmod 700 "$d"; chmod 600 "$d"/*.json
   note_host "$n"
@@ -325,7 +443,7 @@ capture_into() {  # $1=account name
 restore_from() {  # $1=account name
   local n="$1" d="$ACCOUNTS/$1"
   [ -f "$d/credentials.json" ] || die "account '$n' has no stored credential"
-  cred_write "$d/credentials.json"
+  cred_install "$d/credentials.json" "$n"
   [ -f "$d/identity.json" ] && identity_apply "$CC_JSON" "$d/identity.json"
   printf '%s\n' "$n" > "$ACTIVE_FILE"
 }
@@ -490,7 +608,7 @@ route_stray() {  # $1=live credential file  $2=owning account  $3=live identity'
     warn "a claude session still signed in as ${B}$owner${RST} renewed its token - saved it to $owner"
   fi
   if [ -n "$cur" ] && [ "$cur" != "$owner" ] && acct_exists "$cur"; then
-    cred_write "$ACCOUNTS/$cur/credentials.json"
+    cred_install "$ACCOUNTS/$cur/credentials.json" "$cur"
     warn "put ${B}$cur${RST}'s credential back - exit the claude sessions still open as $owner"
   fi
 }
@@ -553,6 +671,7 @@ sync_active() {
     mkdir -p "$ACCOUNTS/$cur"
     mv "$tmp" "$stored"
     chmod 600 "$stored"
+    mcp_absorb "$stored" "$cur"
     identity_extract "$CC_JSON" > "$ACCOUNTS/$cur/identity.json"
     chmod 600 "$ACCOUNTS/$cur/identity.json"
     # The live credential is this account's, so this account is what is signed
@@ -666,7 +785,8 @@ cmd_login() {
   fi
 
   capture_into "$n"
-  printf '%s\n' "$n" > "$ACTIVE_FILE"
+  # A fresh sign-in comes without MCP tokens; hand it the shared ones.
+  restore_from "$n"
   info "${GRN}saved${RST} $n  ($(acct_email "$n"))  $(fmt_left "$(acct_expiry "$n")")"
 }
 
@@ -789,7 +909,7 @@ cmd_refresh() {
     if [ -n "$started" ] && acct_exists "$started"; then
       restore_from "$started"
     elif [ -f "$stash/credentials.json" ]; then
-      cred_write "$stash/credentials.json"
+      cred_install "$stash/credentials.json" ""
       identity_apply "$CC_JSON" "$stash/identity.json"
       rm -f "$ACTIVE_FILE"
     else
@@ -921,6 +1041,76 @@ EOF
       fi
       ;;
     *) die "usage: ccswitch autosync [install|uninstall|status]" ;;
+  esac
+}
+
+mcp_servers() {  # $1=file holding an mcpOAuth object, or a credential  -> names
+  python3 - "$1" <<'PYEOF'
+import json, os, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p)) if os.path.exists(p) else {}
+except Exception:
+    d = {}
+m = d.get("mcpOAuth", d) if isinstance(d, dict) else {}
+names = sorted({(v.get("serverName") if isinstance(v, dict) else None) or k.split("|")[0]
+                for k, v in (m if isinstance(m, dict) else {}).items()})
+print(", ".join(names) or "none")
+PYEOF
+}
+
+# Drop account $1's own MCP tokens, and when it is the live account put the
+# tokens it should now use in place.
+mcp_reset_slot() {  # $1=account name
+  local n="$1" slot="$ACCOUNTS/$1/credentials.json" tmp
+  if [ -f "$slot" ]; then
+    tmp="$(mktemp)"
+    mcp_with "$slot" "" > "$tmp"
+    mv "$tmp" "$slot"
+    chmod 600 "$slot"
+  fi
+  if [ "$n" = "$(active_name)" ] && [ -f "$slot" ]; then
+    cred_install "$slot" "$n"
+  fi
+}
+
+cmd_mcp() {
+  local sub="${1:-}" n="${2:-}" force="${3:-}"
+  case "$sub" in
+    ""|status|list)
+      mcp_pool_init
+      info "${B}shared${RST}  $(mcp_servers "$MCP_POOL")"
+      local d
+      for d in "$ACCOUNTS"/*/; do
+        [ -d "$d" ] || continue
+        n="$(basename "$d")"
+        if mcp_isolated "$n"; then
+          printf '  %-12s isolated  %s\n' "$n" "$(mcp_servers "$d/credentials.json")"
+        else
+          printf '  %-12s shared\n' "$n"
+        fi
+      done
+      ;;
+    isolate|share)
+      [ -n "$n" ] || die "usage: ccswitch mcp $sub <name>"
+      acct_exists "$n" || die "no such account '$n' (see: ccswitch list)"
+      if [ "$n" = "$(active_name)" ] && [ "$force" != "--force" ] && claude_running; then
+        die "a claude process is running as $n - exit it first, or pass --force"
+      fi
+      if [ "$sub" = "isolate" ]; then
+        mcp_isolated "$n" && { info "$n already keeps its own MCP sign-ins"; return 0; }
+        # The live tokens are already in the pool: every run syncs them first.
+        touch "$ACCOUNTS/$n/mcp-isolated"
+        mcp_reset_slot "$n"
+        info "${GRN}isolated${RST} $n - it signs in to MCP servers on its own; the shared sign-ins are kept for the other accounts"
+      else
+        mcp_isolated "$n" || { info "$n already uses the shared MCP sign-ins"; return 0; }
+        rm -f "$ACCOUNTS/$n/mcp-isolated"
+        mcp_reset_slot "$n"
+        info "${GRN}shared${RST} $n - it uses the shared MCP sign-ins again; its own were discarded"
+      fi
+      ;;
+    *) die "usage: ccswitch mcp [status | isolate <name> [--force] | share <name> [--force]]" ;;
   esac
 }
 
@@ -1157,7 +1347,7 @@ _ccswitch() {
   case "$prev" in
     use|rm|rename|login|refresh|save) COMPREPLY=($(compgen -W "$accounts" -- "$cur")); return;;
   esac
-  COMPREPLY=($(compgen -W "use add login list current rm rename save sync autosync refresh backup restore doctor update completion help version" -- "$cur"))
+  COMPREPLY=($(compgen -W "use add login list current rm rename mcp save sync autosync refresh backup restore doctor update completion help version" -- "$cur"))
 }
 complete -F _ccswitch ccswitch
 EOF
@@ -1167,7 +1357,7 @@ EOF
 _ccswitch() {
   local -a accounts cmds
   accounts=(${(f)"$(ls -1 ${CCSWITCH_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/ccswitch}/accounts 2>/dev/null)"})
-  cmds=(use add login list current rm rename save sync autosync refresh backup restore doctor update completion help version)
+  cmds=(use add login list current rm rename mcp save sync autosync refresh backup restore doctor update completion help version)
   if (( CURRENT == 2 )); then
     _describe 'command' cmds
     _describe 'account' accounts
@@ -1203,6 +1393,9 @@ ${B}USAGE${RST}
                                   refresh a stored token before it goes stale
   ccswitch rm <name>             forget an account
   ccswitch rename <old> <new>    rename an account
+  ccswitch mcp                   show which accounts share MCP server sign-ins
+  ccswitch mcp isolate <name>    give an account its own MCP sign-ins
+  ccswitch mcp share <name>      put an account back on the shared ones
   ccswitch backup [file]         archive the vault
   ccswitch restore <file>        restore a vault archive
   ccswitch doctor                diagnose the setup
@@ -1236,7 +1429,7 @@ cmd="${1:-}"; shift 2>/dev/null || true
 # whole vault, and for 'help'/'version', which touch nothing.
 case "$cmd" in
   restore|help|-h|--help|version|-V|--version|completion|update|upgrade) ;;
-  *) sync_active ;;
+  *) mcp_pool_init; sync_active ;;
 esac
 case "$cmd" in
   use)                cmd_use "${1:-}" "${2:-}" ;;
@@ -1250,6 +1443,7 @@ case "$cmd" in
   refresh)            cmd_refresh "${1:-}" "${2:-}" ;;
   rm|remove|delete)   cmd_rm "${1:-}" ;;
   rename|mv)          cmd_rename "${1:-}" "${2:-}" ;;
+  mcp)                cmd_mcp "${1:-}" "${2:-}" "${3:-}" ;;
   backup)             cmd_backup "${1:-}" ;;
   restore)            cmd_restore "${1:-}" ;;
   doctor)             cmd_doctor ;;

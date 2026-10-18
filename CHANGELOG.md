@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ccswitch mcp isolate <name>` gives an account its own MCP sign-ins, for
+  when it signs in to a server as someone else (a client's Figma, say).
+  `ccswitch mcp share <name>` puts it back on the shared ones, and
+  `ccswitch mcp` shows which accounts use which.
+
+### Fixed
+
+- Switching accounts no longer signs you out of OAuth MCP servers (Figma,
+  Sentry, PostHog...). Claude Code keeps their tokens in the same credential as
+  the Claude login, so each account restored its own stale copy and every
+  switch forced a fresh MCP sign-in. MCP tokens now live in one pool shared by
+  every account, and a switch swaps only the Claude login. Signing out of a
+  server sticks across switches. The first run gathers the tokens every stored
+  account already holds, keeping the newest copy of each.
+
 ## [0.8.2] - 2026-10-17
 
 ### Fixed
