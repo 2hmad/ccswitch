@@ -247,9 +247,20 @@ ccswitch stores per account, under `~/.config/ccswitch/accounts/<name>/`:
 ```
 credentials.json   copy of .credentials.json
 identity.json      only the oauthAccount and userID keys from .claude.json
+mcp-isolated       present only for an account with its own MCP sign-ins
 ```
 
 Switching writes those two back into place and leaves every other key in `~/.claude.json` untouched — which is why `mcpServers`, `projects` and the rest stay shared.
+
+The credential file also holds the OAuth tokens of your MCP servers (`mcpOAuth`). Those belong to your Figma, Sentry... sign-in, not to the Claude account, so they are kept once, in `~/.config/ccswitch/mcp-oauth.json`, and shared by every account: a switch swaps only the Claude login. Sign in or out of an MCP server under any account and every account sees it. Connectors added through claude.ai live on Anthropic's side and stay per account.
+
+If one account should sign in to a server as someone else — a client's Figma, say — isolate it. It then keeps its own MCP sign-ins in its slot, and the shared ones stay untouched for everyone else:
+
+```bash
+ccswitch mcp isolate client    # client signs in to MCP servers on its own
+ccswitch mcp share client      # back to the shared sign-ins
+ccswitch mcp                   # which accounts share, which are isolated
+```
 
 Before switching away, ccswitch saves the live credential back into the account you're leaving. Claude Code refreshes tokens during a session, so without this you'd restore a stale token the next time around.
 
