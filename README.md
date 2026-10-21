@@ -380,7 +380,12 @@ This path has been exercised against a `security(1)` stand-in but not yet agains
 
 `ccswitch doctor` prints what it resolved to. The first switch may raise a keychain prompt — macOS asks before letting a new binary read an item it did not create. Choose **Always Allow** if you would rather not be asked again.
 
-The keychain is used only when there is no `~/.claude/.credentials.json`; a file left by an older Claude Code still wins. Force it either way with `CCSWITCH_BACKEND=keychain` or `CCSWITCH_BACKEND=file`.
+The keychain is the default on macOS, even if `~/.claude/.credentials.json` exists. Claude Code prefers Keychain, so letting a stale plaintext file select the backend can make ccswitch switch a different credential from the one Claude reads. The file is left untouched. If Claude Code is deliberately using plaintext storage because Keychain is unavailable, use `CCSWITCH_BACKEND=file`. You can also explicitly select `CCSWITCH_BACKEND=keychain`.
+
+Keychain values are written as compact ASCII JSON without a trailing newline.
+This matters because `security -w` returns hex instead of JSON when a stored
+value contains non-printable bytes. See Apple's
+[password output implementation](https://github.com/apple-oss-distributions/Security/blob/main/SecurityTool/macOS/keychain_find.c#L387).
 
 ## Contributing
 
