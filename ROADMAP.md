@@ -7,11 +7,17 @@
   `security -w`, which Claude cannot parse. The backend now serializes compact
   ASCII JSON; the security fixture models the actual output behavior. The user
   applied this follow-up to the Work checkout and confirmed switching works.
-- The verified fix is being prepared for upstream review.
+- Upstream review: [PR #5](https://github.com/2hmad/ccswitch/pull/5) is open.
+  CI currently reports `action_required`; automated CI validation is pending.
 - Full smoke validation on this host is incomplete: 88 checks passed, while
   session detection and the open-session warning could not pass because the
   host denies `ps` and `pgrep`, including outside the requested sandbox.
   These checks still need an environment permitting process inspection.
+
+## Recent external operations
+
+- 2026-10-21 13:32 (Beijing): created the personal fork, published the verified
+  fix branch, and opened [upstream PR #5](https://github.com/2hmad/ccswitch/pull/5).
 
 ## Validation scope
 
