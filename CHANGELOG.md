@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keychain writes now use compact ASCII JSON without a trailing newline.
+  `security -w` hex-encodes values containing non-printable bytes, which made
+  Claude Code report signed out after switching. The test fixture now models
+  this behavior; Unicode data is preserved through JSON escapes.
+- macOS now defaults to Keychain even when a stale `.credentials.json` exists,
+  so account switching updates the credential Claude Code actually reads.
+  Plaintext-only setups can still select `CCSWITCH_BACKEND=file` explicitly.
+
 ## [0.9.0] - 2026-10-18
 
 ### Added

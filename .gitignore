@@ -1,3 +1,5 @@
 *.tar.gz
 *.bak.*
 .DS_Store
+.private/
+.tmp/

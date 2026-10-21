@@ -9,6 +9,7 @@ trap 'rm -rf "$TMP"' EXIT
 export HOME="$TMP"
 export PATH="$ROOT/bin:$PATH"
 export NO_COLOR=1
+export CCSWITCH_BACKEND=file
 unset CLAUDE_CONFIG_DIR
 # Pin the vault inside TMP. VAULT falls back to $XDG_CONFIG_HOME, which
 # escapes $HOME - without this the test would operate on a real vault.
@@ -268,8 +269,9 @@ fake_pid=$!
 ( PATH="$TMP/fakebin:$PATH" exec "$TMP/fakebin/claude" ) &
 real_pid=$!
 sleep 1
+sed -n '/^claude_session_pids()/,/^}/p' "$ROOT/bin/ccswitch" > "$TMP/session-functions.sh"
 # shellcheck source=/dev/null
-source <(sed -n '/^claude_session_pids()/,/^}/p' "$ROOT/bin/ccswitch")
+source "$TMP/session-functions.sh"
 seen="$(PATH="$TMP/fakebin:$PATH" claude_session_pids)"
 check "chrome native host is not a session" "$(printf '%s\n' "$seen" | grep -c "^$fake_pid$")" "0"
 check "a real session is still detected"    "$(printf '%s\n' "$seen" | grep -c "^$real_pid$")" "1"
@@ -310,8 +312,9 @@ check "targeted save stores into the named slot" \
 
 # Version comparison must be numeric, not lexical: "0.10.0" is newer than
 # "0.9.0" but sorts before it as a string.
+sed -n '/^version_gt()/,/^}/p' "$ROOT/bin/ccswitch" > "$TMP/version-functions.sh"
 # shellcheck source=/dev/null
-source <(sed -n '/^version_gt()/,/^}/p' "$ROOT/bin/ccswitch")
+source "$TMP/version-functions.sh"
 vg() { if version_gt "$1" "$2"; then echo yes; else echo no; fi; }
 check "version_gt 0.10.0 > 0.9.0"  "$(vg 0.10.0 0.9.0)"  "yes"
 check "version_gt 0.9.0 !> 0.10.0" "$(vg 0.9.0 0.10.0)"  "no"
