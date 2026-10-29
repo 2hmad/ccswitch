@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so account switching updates the credential Claude Code actually reads.
   Plaintext-only setups can still select `CCSWITCH_BACKEND=file` explicitly.
 
+Both fixes come from [#5](https://github.com/2hmad/ccswitch/pull/5) — thanks
+@venshine.
+
 ## [0.9.0] - 2026-10-18
 
 ### Added
