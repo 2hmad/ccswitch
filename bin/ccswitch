@@ -33,7 +33,9 @@ CRED="$CC_DIR/.credentials.json"
 # unset or has characters outside [a-zA-Z0-9._-].
 if [ -n "${CCSWITCH_BACKEND:-}" ]; then
   BACKEND="$CCSWITCH_BACKEND"
-elif [ "$(uname -s)" = "Darwin" ] && [ ! -f "$CRED" ]; then
+elif [ "$(uname -s)" = "Darwin" ]; then
+  # Claude Code prefers Keychain on macOS even when a stale plaintext
+  # fallback exists. Selecting by file presence splits the two tools' state.
   BACKEND="keychain"
 else
   BACKEND="file"
@@ -82,10 +84,11 @@ cred_read() {
 # Install $1 (a file of credential JSON) as the live credential.
 cred_write() {  # $1=source file
   if [ "$BACKEND" = "keychain" ]; then
-    # -X takes hex, so JSON quoting never reaches the shell; -U updates in
-    # place instead of failing with errSecDuplicateItem. This mirrors how
-    # Claude Code itself writes the item.
-    local hex; hex="$(python3 -c 'import sys;sys.stdout.write(open(sys.argv[1],"rb").read().hex())' "$1")"
+    # security -w returns hex if the stored bytes include newlines or other
+    # non-printable bytes. Claude expects JSON, so store compact ASCII JSON
+    # without a trailing newline. -X is only the write transport encoding.
+    local hex; hex="$(python3 -c 'import json,sys;sys.stdout.write(json.dumps(json.load(open(sys.argv[1])),ensure_ascii=True,allow_nan=False,separators=(",",":")).encode("ascii").hex())' "$1")" \
+      || die "invalid credential JSON - refusing to overwrite the login keychain"
     security add-generic-password -U -a "$(kc_account)" -s "$(kc_service)" -X "$hex" \
       || die "could not write to the login keychain (is it unlocked?)"
   else
@@ -1411,7 +1414,7 @@ ${B}EXAMPLE${RST}
 ${B}ENVIRONMENT${RST}
   CCSWITCH_HOME    vault location (default \$XDG_CONFIG_HOME/ccswitch)
   CCSWITCH_BACKEND credential store: 'file' or 'keychain' (default: keychain
-                   on macOS when no credentials file exists, else file)
+                   on macOS, file elsewhere)
   CCSWITCH_REFRESH_WINDOW_DAYS
                    how close to the refresh token's expiry 'refresh' renews it
                    (default 7)
